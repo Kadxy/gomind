@@ -1,0 +1,19 @@
+{
+  "name": "gomind",
+  "private": true,
+  "type": "module",
+  "workspaces": ["web"],
+  "scripts": {
+    "dev": "bun --filter web dev",
+    "dev:relay": "ALLOWED_ORIGINS='*' PORT=8765 bun run relay/server.js",
+    "build": "bun --filter web build",
+    "test": "bun --filter web test",
+    "lint": "biome check .",
+    "format": "biome format --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4"
+  },
+  "trustedDependencies": ["@biomejs/biome", "esbuild"],
+  "packageManager": "bun@1.3.8"
+}

@@ -1,0 +1,19 @@
+node_modules/
+dist/
+build/
+.DS_Store
+*.log
+.env
+.env.local
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Build artifacts
+web/tsconfig.tsbuildinfo
+
+# Dev-only test scripts (Rapfi protocol debugging)
+rapfi-*.cjs
+
+# bun
+.bun
