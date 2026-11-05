@@ -40,11 +40,18 @@ function Heading({ title, subtitle }: { title: string; subtitle?: string }) {
   );
 }
 
+/** Plain text link-style action, centred under the primary button. */
 function BackButton({ onClick, label = '返回' }: { onClick: () => void; label?: string }) {
   return (
-    <Button variant="ghost" className="w-full h-10 text-muted-foreground" onClick={onClick}>
-      {label}
-    </Button>
+    <div className="flex justify-center pt-1">
+      <button
+        type="button"
+        onClick={onClick}
+        className="px-1 py-1 text-sm text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
+      >
+        {label}
+      </button>
+    </div>
   );
 }
 
