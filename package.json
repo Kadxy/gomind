@@ -7,6 +7,7 @@
     "dev": "bun --filter web dev",
     "dev:relay": "ALLOWED_ORIGINS='*' PORT=8765 bun run relay/server.js",
     "build": "bun --filter web build",
+    "start": "STATIC_DIR=web/dist bun run relay/server.js",
     "test": "bun --filter web test",
     "lint": "biome check .",
     "format": "biome format --write ."

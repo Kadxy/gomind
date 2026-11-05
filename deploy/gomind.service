@@ -1,0 +1,22 @@
+# Bare-metal alternative to docker-compose: run the app directly with Bun.
+#   git clone <repo> /opt/gomind && cd /opt/gomind
+#   bun install && bun run build
+#   sudo cp deploy/gomind.service /etc/systemd/system/
+#   sudo systemctl enable --now gomind
+# Then put Caddy/nginx (or a CDN) in front of :8000 for TLS. Adjust the bun
+# path if it's installed elsewhere (`which bun`).
+[Unit]
+Description=Gomind (static frontend + WebSocket relay)
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/gomind
+Environment=PORT=8000
+Environment=STATIC_DIR=/opt/gomind/web/dist
+Environment=ALLOWED_ORIGINS=*
+ExecStart=/usr/local/bin/bun run relay/server.js
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

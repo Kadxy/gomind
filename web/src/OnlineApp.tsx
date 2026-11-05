@@ -20,6 +20,10 @@ export function OnlineApp({ onExit }: { onExit: () => void }) {
   const { state, play, reset } = useGame();
 
   const [mySide, setMySide] = useState<Stone | null>(null);
+  // Locked at first render. OnlineGate's SetupCard auto-submits it once on
+  // mount, so nothing here calls connect() for it — a second connect would
+  // open and immediately abort a stray socket, and the relay tears the
+  // whole room down on any disconnect.
   const [initialRoomId] = useState<string | undefined>(readRoomFromUrl);
 
   // Only the first peer to arrive rolls the side assignment; track via
@@ -73,15 +77,6 @@ export function OnlineApp({ onExit }: { onExit: () => void }) {
       }
     };
   });
-
-  // Auto-connect when URL carries ?room=XXXX. Mount-only; the initial
-  // URL is locked at first render so this never re-fires.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only
-  useEffect(() => {
-    if (initialRoomId && room.status === 'idle') {
-      room.connect(initialRoomId);
-    }
-  }, []);
 
   // Side assignment: the peer who was alone at welcome time ("first")
   // rolls a 50/50 once the other arrives, keeps one side for themselves,

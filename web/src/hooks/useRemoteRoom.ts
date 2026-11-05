@@ -2,13 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PeerMsg } from '@/game/peer-protocol';
 
 // Relay server URL. WebSocket path uses `/room/<ID>` — one room per path.
-// In local dev (hostname === 'localhost'|'127.0.0.1') we point at the
-// local relay so you can iterate without redeploying the VPS.
+// Default is same-origin (ws:// or wss:// to match the page), which is
+// right whenever the relay serves the built frontend (STATIC_DIR) or sits
+// behind the same reverse proxy. In dev, vite.config.ts proxies `/room`
+// to the local relay (`bun run dev:relay`). Set VITE_RELAY_WS_URL at
+// build time to point at a relay hosted elsewhere (wss://relay.example.com).
 const RELAY_WS_URL = (() => {
-  if (typeof window === 'undefined') return 'wss://relay.example.com';
-  const h = window.location.hostname;
-  if (h === 'localhost' || h === '127.0.0.1') return 'ws://localhost:8765';
-  return 'wss://relay.example.com';
+  const override = import.meta.env.VITE_RELAY_WS_URL;
+  if (override) return override.replace(/\/+$/, '');
+  if (typeof window === 'undefined') return '';
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${window.location.host}`;
 })();
 
 // App-level ping cadence. Relay's idleTimeout is 120s; ~30s ping keeps

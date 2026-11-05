@@ -1,0 +1,28 @@
+# Overlay: add Caddy for automatic HTTPS when nothing else terminates TLS.
+#   DOMAIN=gomind.example.com in .env, then
+#   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d --build
+# Use DOMAIN=:80 for plain HTTP behind a CDN that terminates TLS itself.
+services:
+  gomind:
+    ports: !reset []
+    expose:
+      - '8000'
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '443:443'
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env (e.g. gomind.example.com)}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - gomind
+
+volumes:
+  caddy_data:
+  caddy_config:

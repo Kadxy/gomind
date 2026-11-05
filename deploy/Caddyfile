@@ -1,0 +1,6 @@
+# Caddy proxies everything (including WebSocket upgrades) to the app and
+# obtains a Let's Encrypt certificate for DOMAIN automatically.
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy gomind:8000
+}
