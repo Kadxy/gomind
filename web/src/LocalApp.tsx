@@ -1,7 +1,7 @@
 import { AnalysisPanel } from '@/components/AnalysisPanel';
 import { Board } from '@/components/Board';
 import { Controls } from '@/components/Controls';
-import { EnginePanel } from '@/components/EnginePanel';
+import { EnginePanel, enginePercent } from '@/components/EnginePanel';
 import { ModeSelect } from '@/components/ModeSelect';
 import { LocalTurnBadge } from '@/components/TurnBadge';
 import { Button } from '@/components/ui/Button';
@@ -197,7 +197,17 @@ export function LocalApp() {
 
   const humansTurn =
     mode === 'pvp-local' || (mode === 'pvc' && state.toMove === humanSide && !aiThinking);
-  const canPlay = state.winner === 0 && engine.ready && humansTurn && !selfPlaying;
+  // Two players on one screen don't need the engine; let them start while
+  // it downloads (analysis kicks in once it's ready).
+  const canPlay =
+    state.winner === 0 && (engine.ready || mode === 'pvp-local') && humansTurn && !selfPlaying;
+  const enginePct = enginePercent(engine);
+  const engineNotice =
+    engine.ready || mode === 'pvp-local'
+      ? null
+      : engine.failed
+        ? '引擎加载失败，请刷新页面'
+        : `引擎加载中${enginePct !== null ? ` ${enginePct}%` : ''}`;
 
   const boardCandidates = showCandidates ? analysis.candidates : [];
   const hideCandidatesForMode = mode === 'selfplay';
@@ -206,6 +216,7 @@ export function LocalApp() {
     <main className="flex-1 min-h-0 flex flex-col lg:grid lg:grid-cols-[1fr_360px] gap-3 lg:gap-6 p-3 lg:p-6">
       <section className="flex flex-col items-center gap-3 min-h-0 min-w-0 flex-1">
         <LocalTurnBadge
+          engineNotice={engineNotice}
           winner={state.winner}
           toMove={state.toMove}
           aiThinking={aiThinking}

@@ -181,6 +181,10 @@ function createRoom(hostPeer) {
 
 function cacheControlFor(pathname) {
   if (pathname.startsWith('/assets/')) return 'public, max-age=31536000, immutable';
+  // Engine loaders and data package carry a content hash in their names.
+  if (/^\/rapfi\/[^/]+\.[0-9a-f]{8}\.(js|data)$/.test(pathname)) {
+    return 'public, max-age=31536000, immutable';
+  }
   if (pathname.startsWith('/rapfi/')) return 'public, max-age=86400';
   return 'no-cache';
 }

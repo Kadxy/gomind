@@ -11,12 +11,18 @@
 // Input protocol: { id, cmd: 'init' | 'bestMove' | 'topCandidates' |
 // 'evaluate' | 'benchmark', ...payload }.
 
+import { RAPFI_ASSETS } from '@/lib/rapfiAssets';
+
 interface RapfiOpts {
   locateFile: (url: string) => string;
   onReceiveStdout: (line: string) => void;
   onReceiveStderr: (line: string) => void;
   onExit: (code: number) => void;
   setStatus: (s: string) => void;
+  // Emscripten's file packager calls this before fetching the data package;
+  // returning the bytes skips its own download (we fetch with progress and
+  // a persistent cache instead).
+  getPreloadedPackage?: (name: string, size: number) => ArrayBuffer;
   wasmMemory?: WebAssembly.Memory;
   // Absolute URL (or Blob) of the Rapfi glue script. Emscripten's pthread
   // build spawns worker threads via `new Worker(_scriptName, ...)`, where
@@ -69,9 +75,7 @@ type Req =
       timeMs: number;
     };
 
-type Res =
-  | { id: number; ok: true; result: unknown }
-  | { id: number; ok: false; error: string };
+type Res = { id: number; ok: true; result: unknown } | { id: number; ok: false; error: string };
 
 let rapfi: RapfiInstance | null = null;
 let threadCount = 1;
@@ -244,10 +248,10 @@ function onStdout(raw: string) {
       /Speed (\d+) \| Depth (\d+)-\d+ \| Eval ([+-]?(?:M\d+|\d+)) \| Node ([\d.]+)([kKmMgG]?) \| Time \d+(?:ms|s)/,
     );
     if (sum) {
-      pending.depth = parseInt(sum[2], 10);
+      pending.depth = Number.parseInt(sum[2], 10);
       const evalStr = sum[3];
       if (/^[+-]?\d+$/.test(evalStr)) {
-        pending.scoreFromEval = parseInt(evalStr, 10);
+        pending.scoreFromEval = Number.parseInt(evalStr, 10);
       } else if (evalStr.startsWith('-M')) {
         pending.scoreFromEval = -1_000_000; // terminal loss
       } else if (evalStr.startsWith('+M') || evalStr.startsWith('M')) {
@@ -255,7 +259,7 @@ function onStdout(raw: string) {
       }
       const unit = sum[5].toLowerCase();
       const mult = unit === 'g' ? 1e9 : unit === 'm' ? 1e6 : unit === 'k' ? 1e3 : 1;
-      pending.nodes = Math.round(parseFloat(sum[4]) * mult);
+      pending.nodes = Math.round(Number.parseFloat(sum[4]) * mult);
       return;
     }
 
@@ -263,10 +267,10 @@ function onStdout(raw: string) {
       /^Depth (\d+)-\d+ \| Eval ([+-]?(?:M\d+|\d+)) \| Time \d+(?:ms|s) \| (.+)/,
     );
     if (depth) {
-      pending.depth = parseInt(depth[1], 10);
+      pending.depth = Number.parseInt(depth[1], 10);
       const evalStr = depth[2];
       if (/^[+-]?\d+$/.test(evalStr)) {
-        pending.scoreFromEval = parseInt(evalStr, 10);
+        pending.scoreFromEval = Number.parseInt(evalStr, 10);
       }
       // Seed candidates from each iteration's first PV move. Typically
       // the same move dominates across depths so this yields 1-3 unique
@@ -297,33 +301,102 @@ function parseAlgebraic(s: string): { x: number; y: number } | null {
   const m = s.match(/^([A-Oa-o])(\d+)$/);
   if (!m) return null;
   const col = m[1].toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0);
-  const row = parseInt(m[2], 10) - 1;
+  const row = Number.parseInt(m[2], 10) - 1;
   if (col < 0 || col >= 15 || row < 0 || row >= 15) return null;
   return { x: col, y: row };
+}
+
+// Cache Storage keeps the ~10 MB data package across visits, independent of
+// the HTTP cache (which evicts large entries readily on mobile). The file
+// name carries a content hash, so a new package is a new key.
+const DATA_CACHE = 'gomind-rapfi';
+const PROGRESS_INTERVAL_MS = 100;
+
+function postProgress(loaded: number, total: number) {
+  workerGlobal.postMessage({ type: 'progress', loaded, total });
+}
+
+async function openDataCache(): Promise<Cache | null> {
+  if (typeof caches === 'undefined') return null; // insecure context
+  try {
+    return await caches.open(DATA_CACHE);
+  } catch {
+    return null; // e.g. storage disabled
+  }
+}
+
+async function loadDataPackage(url: string, size: number): Promise<ArrayBuffer> {
+  const cache = await openDataCache();
+  if (cache) {
+    try {
+      const hit = await cache.match(url);
+      if (hit) {
+        const buf = await hit.arrayBuffer();
+        if (buf.byteLength === size) {
+          postProgress(size, size);
+          return buf;
+        }
+      }
+    } catch {
+      // Fall through to the network.
+    }
+  }
+
+  const res = await fetch(url);
+  if (!res.ok || !res.body) throw new Error(`engine data: HTTP ${res.status}`);
+  const out = new Uint8Array(size);
+  const reader = res.body.getReader();
+  let loaded = 0;
+  let lastPost = 0;
+  postProgress(0, size);
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (loaded + value.byteLength > size) throw new Error('engine data larger than expected');
+    out.set(value, loaded);
+    loaded += value.byteLength;
+    const now = performance.now();
+    if (now - lastPost >= PROGRESS_INTERVAL_MS) {
+      lastPost = now;
+      postProgress(loaded, size);
+    }
+  }
+  if (loaded !== size) throw new Error(`engine data truncated (${loaded}/${size} bytes)`);
+  postProgress(size, size);
+
+  if (cache) {
+    // Response() copies the bytes, so `out` stays ours. Drop older packages.
+    cache
+      .put(url, new Response(out, { headers: { 'Content-Type': 'application/octet-stream' } }))
+      .then(async () => {
+        for (const req of await cache.keys()) if (req.url !== url) await cache.delete(req);
+      })
+      .catch(() => {});
+  }
+  return out.buffer;
 }
 
 async function initRapfi(): Promise<{ size: number; threads: number }> {
   // Threaded variant needs SharedArrayBuffer (requires COOP/COEP headers).
   const hasThreads =
-    typeof SharedArrayBuffer !== 'undefined' &&
-    typeof WebAssembly.Memory === 'function';
-  const scriptName = hasThreads ? 'rapfi-multi-simd128' : 'rapfi-single';
+    typeof SharedArrayBuffer !== 'undefined' && typeof WebAssembly.Memory === 'function';
+  const scriptName = hasThreads ? RAPFI_ASSETS.multi : RAPFI_ASSETS.single;
   const engineDir = '/rapfi/';
   // Absolute URL is required for pthread spawning — `new Worker(url)` inside
   // a Worker resolves relative paths against the worker's own script URL,
   // not the page, which lands in the wrong place.
-  const scriptUrl = new URL(`${engineDir}${scriptName}.js`, self.location.href).href;
+  const scriptUrl = new URL(`${engineDir}${scriptName}`, self.location.href).href;
+  const dataUrl = new URL(`${engineDir}${RAPFI_ASSETS.data}`, self.location.href).href;
 
+  // Start the big download first; the loader script is small.
+  const dataPromise = loadDataPackage(dataUrl, RAPFI_ASSETS.dataSize);
   workerGlobal.importScripts(scriptUrl);
+  const data = await dataPromise;
 
   const opts: RapfiOpts = {
-    locateFile: (u: string) => {
-      // Rapfi's JS asks for "rapfi-multi-simd128.data" but the actual file
-      // is just "rapfi.data" (the weights package is shared across all
-      // WASM variants).
-      if (/^rapfi.*\.data$/.test(u)) u = 'rapfi.data';
-      return engineDir + u;
-    },
+    // The loaders ask for "rapfi-<variant>.data"; both share one package.
+    locateFile: (u: string) => engineDir + (u.endsWith('.data') ? RAPFI_ASSETS.data : u),
+    getPreloadedPackage: () => data,
     onReceiveStdout: onStdout,
     onReceiveStderr: (o) => console.error('[rapfi.err]', o),
     onExit: (c) => console.log('[rapfi.exit]', c),
@@ -345,9 +418,7 @@ async function initRapfi(): Promise<{ size: number; threads: number }> {
     threadCount = 1;
   }
 
-  console.log(
-    `[rapfi] init: script=${scriptUrl} threads=${threadCount} hasThreads=${hasThreads}`,
-  );
+  console.log(`[rapfi] init: script=${scriptUrl} threads=${threadCount} hasThreads=${hasThreads}`);
 
   const factory = workerGlobal.Rapfi;
   if (!factory) throw new Error('Rapfi global not found after importScripts');

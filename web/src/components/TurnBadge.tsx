@@ -21,6 +21,8 @@ export function StoneDot({
 }
 
 interface LocalTurnBadgeProps {
+  /** Shown instead of the turn while the engine this mode needs isn't ready. */
+  engineNotice?: string | null;
   winner: Stone;
   toMove: Stone;
   aiThinking: boolean;
@@ -31,6 +33,7 @@ interface LocalTurnBadgeProps {
 }
 
 export function LocalTurnBadge({
+  engineNotice,
   winner,
   toMove,
   aiThinking,
@@ -41,6 +44,13 @@ export function LocalTurnBadge({
 }: LocalTurnBadgeProps) {
   if (winner !== 0) {
     return <WinnerBadge winner={winner} moveCount={moveCount} />;
+  }
+  if (engineNotice) {
+    return (
+      <div className="flex items-center rounded-full bg-card ring-1 ring-border/70 px-4 py-1.5 text-sm text-muted-foreground shadow-sm">
+        <span className="tabular-nums">{engineNotice}</span>
+      </div>
+    );
   }
   const busy = aiThinking || selfPlaying;
   const label = selfPlaying

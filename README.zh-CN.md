@@ -158,8 +158,8 @@ Rapfi 目前以单线程模式运行，并启用 WebAssembly SIMD128。仓库中
 ## 致谢
 
 - [Rapfi](https://github.com/dhbloo/rapfi)，由 Rapfi 开发者开发，是所有 AI 功能所用的引擎。
-  `web/public/rapfi/` 中的 WebAssembly 构建产物是 [Gomoku Calculator](https://www.gomocalc.com)
-  所发布版本的原样副本。
+  `web/public/rapfi/` 中的 WebAssembly 构建产物来自 [Gomoku Calculator](https://www.gomocalc.com)，
+  重新打包后只保留自由规则所需的网络。
 - 神经网络权重来自 [rapfi-networks](https://github.com/dhbloo/rapfi-networks)。
 
 ## 许可证

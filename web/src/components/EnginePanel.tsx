@@ -1,6 +1,6 @@
-import type { Engine } from '@/hooks/useEngine';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Slider } from '@/components/ui/Slider';
+import type { Engine } from '@/hooks/useEngine';
 import { cn } from '@/lib/utils';
 
 interface EnginePanelProps {
@@ -25,7 +25,7 @@ const UNLIMITED_INDEX = TIME_STOPS.length - 1;
 function indexForBudget(ms: number): number {
   if (ms === 0) return UNLIMITED_INDEX;
   let best = 0;
-  let diff = Infinity;
+  let diff = Number.POSITIVE_INFINITY;
   for (let i = 0; i < UNLIMITED_INDEX; i++) {
     const d = Math.abs(TIME_STOPS[i] - ms);
     if (d < diff) {
@@ -49,6 +49,7 @@ export function EnginePanel({
   onMaxDepthChange,
 }: EnginePanelProps) {
   const timeIdx = indexForBudget(budgetMs);
+  const pct = enginePercent(engine);
 
   return (
     <Card>
@@ -65,11 +66,21 @@ export function EnginePanel({
               ? engine.threads > 1
                 ? `● 就绪 · ${engine.threads} 线程`
                 : '● 就绪 · 单线程'
-              : '○ 加载中'}
+              : engine.failed
+                ? '○ 加载失败，请刷新页面'
+                : `○ 加载中${pct !== null ? ` ${pct}%` : ''}`}
           </span>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
+        {!engine.ready && !engine.failed && (
+          <div className="h-1 rounded-full bg-muted overflow-hidden" aria-hidden="true">
+            <div
+              className="h-full rounded-full bg-foreground/40 transition-[width] duration-200"
+              style={{ width: `${pct ?? 0}%` }}
+            />
+          </div>
+        )}
         <div className="flex flex-col gap-2">
           <div className="flex items-baseline justify-between text-xs">
             <span className="text-muted-foreground">搜索深度</span>
@@ -100,4 +111,11 @@ export function EnginePanel({
       </CardContent>
     </Card>
   );
+}
+
+/** Download progress of the engine's data package, 0-100, or null if unknown. */
+export function enginePercent(engine: Engine): number | null {
+  const l = engine.loading;
+  if (!l || l.total <= 0) return null;
+  return Math.min(100, Math.floor((l.loaded / l.total) * 100));
 }

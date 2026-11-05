@@ -172,8 +172,8 @@ about 130K nodes per second on an Apple M3 Pro, which is sufficient for strong p
 ## Acknowledgements
 
 - [Rapfi](https://github.com/dhbloo/rapfi) by the Rapfi developers, the engine behind
-  every AI feature. The WebAssembly builds in `web/public/rapfi/` are unmodified copies of
-  the ones published by [Gomoku Calculator](https://www.gomocalc.com).
+  every AI feature. The WebAssembly builds in `web/public/rapfi/` come from
+  [Gomoku Calculator](https://www.gomocalc.com), repacked to ship only the freestyle network.
 - Neural network weights from [rapfi-networks](https://github.com/dhbloo/rapfi-networks).
 
 ## License
