@@ -1,7 +1,7 @@
 # App only: static frontend + WebSocket relay on one port.
 #   cp .env.example .env     # set BIND to where your reverse proxy points
 #   docker compose up -d --build
-# Already have nginx / Caddy terminating TLS? Point it at BIND and
+# Already have a reverse proxy terminating TLS? Point it at BIND and
 # make sure it forwards WebSocket upgrades (see README). No proxy yet? Add
 # the bundled Caddy with:
 #   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d --build

@@ -153,7 +153,16 @@ about 130K nodes per second on an Apple M3 Pro, which is sufficient for strong p
 
 ## Acknowledgements
 
-- [Rapfi](https://github.com/dhbloo/rapfi) by the Rapfi developers, licensed under
-  GPL-3.0. The WebAssembly builds in `web/public/rapfi/` are compiled from Rapfi.
-- Neural network weights from
-  [rapfi-networks](https://github.com/dhbloo/rapfi-networks), released under CC0-1.0.
+- [Rapfi](https://github.com/dhbloo/rapfi) by the Rapfi developers, the engine behind
+  every AI feature. The WebAssembly builds in `web/public/rapfi/` are unmodified copies of
+  the ones published by [Gomoku Calculator](https://www.gomocalc.com).
+- Neural network weights from [rapfi-networks](https://github.com/dhbloo/rapfi-networks).
+
+## License
+
+Gomind's own source code is released under the [MIT License](LICENSE).
+
+The bundled third-party files in `web/public/rapfi/` keep their own licenses: the Rapfi
+engine builds are GPL-3.0 and the network weights are CC0-1.0. See
+[`web/public/rapfi/NOTICE.md`](web/public/rapfi/NOTICE.md) for sources, checksums, and the
+full license texts.

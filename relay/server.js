@@ -8,7 +8,8 @@
 //
 // HTTP:
 //   POST /rooms  {peer}      -> {id, grace}  allocate a free 4-digit room,
-//                              reserving the host seat for `peer`
+//                              reserving the host seat for `peer` (CORS-enabled
+//                              for ALLOWED_ORIGINS)
 //   GET  /health             -> {ok, rooms}
 //   GET  /room/<ID>?peer=ID  WebSocket (upgrade)
 //
@@ -88,6 +89,23 @@ function originAllowed(origin) {
     }
     return false;
   });
+}
+
+/**
+ * CORS for POST /rooms, so a frontend hosted on another origin (see
+ * VITE_RELAY_WS_URL) can create rooms. WebSocket upgrades don't use CORS;
+ * they are checked against ALLOWED_ORIGINS directly.
+ */
+function corsHeaders(origin) {
+  if (!origin || !originAllowed(origin)) return {};
+  const any = ALLOWED_ORIGINS.length === 1 && ALLOWED_ORIGINS[0] === '*';
+  return {
+    'Access-Control-Allow-Origin': any ? '*' : origin,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Max-Age': '600',
+    ...(any ? {} : { Vary: 'Origin' }),
+  };
 }
 
 function allocRoomId() {
@@ -190,21 +208,33 @@ const server = Bun.serve({
       return Response.json({ ok: true, rooms: rooms.size });
     }
 
-    if (url.pathname === '/rooms' && req.method === 'POST') {
-      if (!originAllowed(req.headers.get('origin'))) {
+    if (url.pathname === '/rooms') {
+      const origin = req.headers.get('origin');
+      const cors = corsHeaders(origin);
+      // Same-origin requests may omit Origin; cross-origin ones must match.
+      if (origin && !originAllowed(origin)) {
         return new Response('origin not allowed', { status: 403 });
+      }
+      if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+      if (req.method !== 'POST') {
+        return new Response('method not allowed', {
+          status: 405,
+          headers: { Allow: 'POST, OPTIONS' },
+        });
       }
       let body;
       try {
         body = await req.json();
       } catch {
-        return Response.json({ error: 'bad json' }, { status: 400 });
+        return Response.json({ error: 'bad json' }, { status: 400, headers: cors });
       }
       const peer = typeof body?.peer === 'string' ? body.peer : '';
-      if (!PEER_RE.test(peer)) return Response.json({ error: 'bad peer id' }, { status: 400 });
+      if (!PEER_RE.test(peer)) {
+        return Response.json({ error: 'bad peer id' }, { status: 400, headers: cors });
+      }
       const room = createRoom(peer);
-      if (!room) return Response.json({ error: 'no rooms left' }, { status: 503 });
-      return Response.json({ id: room.id, grace: GRACE_MS });
+      if (!room) return Response.json({ error: 'no rooms left' }, { status: 503, headers: cors });
+      return Response.json({ id: room.id, grace: GRACE_MS }, { headers: cors });
     }
 
     const m = url.pathname.match(ROOM_RE);

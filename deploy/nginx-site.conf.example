@@ -1,4 +1,4 @@
-# Drop-in for nginx / OpenResty reverse proxies.
+# Drop-in location block for an nginx (or OpenResty) reverse proxy.
 # The /room/ WebSocket needs the Upgrade headers; the read timeout must be
 # longer than the client's 30s heartbeat (120s+ leaves plenty of slack).
 location / {

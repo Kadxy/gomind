@@ -260,3 +260,55 @@ test('a silently dead socket is reaped and its seat enters the grace window', as
     relay.kill();
   }
 }, 20_000);
+
+test('POST /rooms answers CORS preflight for allowed origins', async () => {
+  const pre = await fetch(`${BASE}/rooms`, {
+    method: 'OPTIONS',
+    headers: {
+      Origin: 'https://app.example.com',
+      'Access-Control-Request-Method': 'POST',
+      'Access-Control-Request-Headers': 'content-type',
+    },
+  });
+  expect(pre.status).toBe(204);
+  expect(pre.headers.get('access-control-allow-origin')).toBe('*');
+  expect(pre.headers.get('access-control-allow-headers')).toContain('Content-Type');
+  const r = await fetch(`${BASE}/rooms`, {
+    method: 'POST',
+    headers: { Origin: 'https://app.example.com', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ peer: 'corspeer0001' }),
+  });
+  expect(r.status).toBe(200);
+  expect(r.headers.get('access-control-allow-origin')).toBe('*');
+});
+
+test('CORS respects an ALLOWED_ORIGINS allowlist', async () => {
+  const port = PORT + 2;
+  const relay = Bun.spawn(['bun', 'run', 'relay/server.js'], {
+    env: { ...process.env, PORT: String(port), ALLOWED_ORIGINS: 'https://a.example.com' },
+    stdout: 'ignore',
+    stderr: 'inherit',
+  });
+  try {
+    for (let i = 0; i < 50; i++) {
+      try {
+        if ((await fetch(`http://localhost:${port}/health`)).ok) break;
+      } catch {}
+      await sleep(100);
+    }
+    const preflight = (origin) =>
+      fetch(`http://localhost:${port}/rooms`, {
+        method: 'OPTIONS',
+        headers: { Origin: origin, 'Access-Control-Request-Method': 'POST' },
+      });
+    const ok = await preflight('https://a.example.com');
+    expect(ok.status).toBe(204);
+    expect(ok.headers.get('access-control-allow-origin')).toBe('https://a.example.com');
+    expect(ok.headers.get('vary')).toBe('Origin');
+    const bad = await preflight('https://b.example.com');
+    expect(bad.status).toBe(403);
+    expect(bad.headers.get('access-control-allow-origin')).toBeNull();
+  } finally {
+    relay.kill();
+  }
+});

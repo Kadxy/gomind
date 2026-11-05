@@ -139,6 +139,15 @@ Rapfi 目前以单线程模式运行，并启用 WebAssembly SIMD128。仓库中
 
 ## 致谢
 
-- [Rapfi](https://github.com/dhbloo/rapfi)，由 Rapfi 开发者开发，采用 GPL-3.0 许可证。`web/public/rapfi/`
-  中的 WebAssembly 构建产物由 Rapfi 源码编译而来。
-- 神经网络权重来自 [rapfi-networks](https://github.com/dhbloo/rapfi-networks)，以 CC0-1.0 发布。
+- [Rapfi](https://github.com/dhbloo/rapfi)，由 Rapfi 开发者开发，是所有 AI 功能所用的引擎。
+  `web/public/rapfi/` 中的 WebAssembly 构建产物是 [Gomoku Calculator](https://www.gomocalc.com)
+  所发布版本的原样副本。
+- 神经网络权重来自 [rapfi-networks](https://github.com/dhbloo/rapfi-networks)。
+
+## 许可证
+
+Gomind 自身的源代码采用 [MIT 许可证](LICENSE)。
+
+`web/public/rapfi/` 中随附的第三方文件沿用各自的许可证：Rapfi 引擎构建产物采用 GPL-3.0，
+网络权重采用 CC0-1.0。来源、校验值与许可证全文见
+[`web/public/rapfi/NOTICE.md`](web/public/rapfi/NOTICE.md)。

@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # Redeploy over ssh: pack the repo (minus node_modules / dist / .git), upload,
 # rebuild the image and restart. The server's .env is left untouched.
-#   deploy/deploy.sh [ssh-host] [remote-dir]
+#   deploy/deploy.sh <ssh-host> <remote-dir>
 set -euo pipefail
-HOST=${1:-my-server}
-DIR=${2:-/opt/gomind}
+if [ $# -ne 2 ]; then
+  echo "usage: $0 <ssh-host> <remote-dir>" >&2
+  exit 2
+fi
+HOST=$1
+DIR=$2
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TGZ=$(mktemp -t gomind)
 trap 'rm -f "$TGZ"' EXIT

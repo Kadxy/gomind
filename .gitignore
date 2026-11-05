@@ -17,3 +17,8 @@ rapfi-*.cjs
 
 # bun
 .bun
+
+# Local AI-assistant notes and settings (may hold personal / deployment info)
+CLAUDE.md
+CLAUDE.local.md
+.claude/
