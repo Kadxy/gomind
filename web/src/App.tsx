@@ -44,7 +44,7 @@ export default function App() {
       {route === 'home' ? (
         <HomeApp onNavigate={navigate} />
       ) : route === 'online' ? (
-        <OnlineApp />
+        <OnlineApp onExit={() => navigate('home')} />
       ) : (
         <LocalApp />
       )}

@@ -9,6 +9,7 @@ import {
 import { type DockAction, type DockSpec, OnlineDock } from '@/components/online/OnlineDock';
 import { PlayerBar, type Presence } from '@/components/online/PlayerBar';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { Toast } from '@/components/ui/Toast';
 import {
   clockFromSnapshot,
   clockView,
@@ -46,6 +47,7 @@ const sideOf = (role: RoomRole | null, hostSide: Stone): Stone =>
 // side's own client claims at zero.
 const FLAG_LATENCY_ALLOWANCE_MS = 1500;
 const FLASH_MS = 2500;
+const TOAST_MS = 3000;
 
 const REQ_NAME: Record<RequestKind, string> = { undo: '悔棋', draw: '求和', reset: '重开' };
 
@@ -77,7 +79,7 @@ function restoredMatch(s: SavedSession, now: number): Omit<MatchState, 'pending'
   };
 }
 
-export function OnlineApp() {
+export function OnlineApp({ onExit }: { onExit: () => void }) {
   const { state: match, stateRef, apply } = useOnlineMatch();
 
   // Role is known from the relay's welcome; before that (right after a
@@ -90,6 +92,26 @@ export function OnlineApp() {
   const [view, setView] = useState<LobbyView>('choose');
   const [code, setCode] = useState('');
   const [confirmLeave, setConfirmLeave] = useState(false);
+  // Lobby errors (房间不存在 ...) show as a toast, not a reserved form line.
+  const [toast, setToast] = useState<{ text: string; id: number } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = useCallback((text: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ text, id: Date.now() });
+    toastTimer.current = setTimeout(() => setToast(null), TOAST_MS);
+  }, []);
+  useEffect(
+    () => () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+    },
+    [],
+  );
+  // A lobby message belongs to the screen it was raised on.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: view is a trigger
+  useEffect(() => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast(null);
+  }, [view]);
   const [flash, setFlash] = useState<string | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showFlash = useCallback((text: string) => {
@@ -222,10 +244,10 @@ export function OnlineApp() {
           else if (msg.t === 'reset_ack')
             apply({ type: 'newGame', timeControl: msg.timeControl, now });
           else apply({ type: 'finish', result: { kind: 'draw', winner: 0 } });
-          if (kind === 'undo') showFlash('对方同意了悔棋');
+          if (kind === 'undo') showFlash('对方已同意悔棋');
         } else {
           if (s.pending?.dir === 'out' && s.pending.kind === kind) apply({ type: 'pendingClear' });
-          showFlash(`对方拒绝了${REQ_NAME[kind]}`);
+          showFlash(`对方拒绝了${REQ_NAME[kind]}请求`);
         }
         return;
       }
@@ -427,10 +449,20 @@ export function OnlineApp() {
     room.join(id);
   };
 
-  /** Editing the form after a failed attempt clears the error. */
-  const resetAttempt = () => {
-    if (room.status === 'error' || room.status === 'ended') room.leave();
-  };
+  // A join / create that fails before any game started: say why and hand the
+  // form back. (Once a game has started the board stays up; see the dock.)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: fires on status only
+  useEffect(() => {
+    if (match.started || left) return;
+    if (room.status !== 'error' && room.status !== 'ended') return;
+    showToast(room.status === 'error' ? (room.error ?? '无法进入房间') : '房间已关闭');
+    room.leave();
+    apply({ type: 'clear' });
+    roleRef.current = null;
+    setSavedRole(null);
+    setUrlRoom(null);
+    clearSession();
+  }, [room.status]);
 
   // Lobby navigation. Picking 加入 / 创建 pushes a history entry (same URL)
   // so the browser's back gesture returns to the choice, like the in-card
@@ -543,27 +575,28 @@ export function OnlineApp() {
   if (!match.started && !left) {
     // Guest: the join button keeps spinning until the host's sync arrives.
     const busy = st !== 'idle' && st !== 'error' && st !== 'ended';
-    const error = st === 'error' ? room.error : st === 'ended' ? '房间已关闭' : null;
-    if (view === 'join') {
-      return (
-        <JoinForm
-          code={code}
-          onCode={(c) => {
-            resetAttempt();
-            setCode(c);
-          }}
-          busy={busy}
-          error={error}
-          info={role !== 'host' && st === 'peer_away' ? '房主暂时离线，回来后自动开始' : null}
-          onJoin={handleJoin}
-          onBack={backFromForm}
+    const hostOffline = role !== 'host' && st === 'peer_away';
+    return (
+      <>
+        {view === 'join' ? (
+          <JoinForm
+            code={code}
+            onCode={setCode}
+            busy={busy}
+            onJoin={handleJoin}
+            onBack={backFromForm}
+          />
+        ) : view === 'create' ? (
+          <CreateForm busy={busy} onCreate={handleCreate} onBack={backFromForm} />
+        ) : (
+          <OnlineChoose onPick={pickView} onBack={onExit} />
+        )}
+        <Toast
+          message={hostOffline ? '房主暂时离线，重新连接后将自动开始' : (toast?.text ?? null)}
+          id={toast?.id}
         />
-      );
-    }
-    if (view === 'create') {
-      return <CreateForm busy={busy} error={error} onCreate={handleCreate} onBack={backFromForm} />;
-    }
-    return <OnlineChoose onPick={pickView} />;
+      </>
+    );
   }
 
   const live = st === 'ready' && !closed && match.clock.pausedAt === null;
@@ -602,7 +635,7 @@ export function OnlineApp() {
     dock = {
       kind: 'message',
       tone: 'muted',
-      text: st === 'reconnecting' ? '连接中断，正在重连…' : '正在连接…',
+      text: st === 'reconnecting' ? '连接中断，正在重新连接' : '正在连接',
       actions: [leave],
     };
   } else if (st === 'peer_away') {
@@ -619,11 +652,11 @@ export function OnlineApp() {
       kind: 'message',
       text:
         pending.kind === 'undo'
-          ? `对方请求悔棋${back > 1 ? `（退 ${back} 手）` : ''}`
+          ? `对方请求悔棋${back > 1 ? `（撤回 ${back} 手）` : ''}`
           : pending.kind === 'draw'
             ? '对方提议和棋'
             : result
-              ? '对方想再来一局'
+              ? '对方请求再来一局'
               : '对方请求重开',
       actions: [
         {
@@ -654,7 +687,7 @@ export function OnlineApp() {
     dock = {
       kind: 'message',
       tone: 'muted',
-      text: `已请求${what}，等待对方回应…`,
+      text: `已发出${what}请求，等待对方回应`,
       actions: [
         {
           key: 'withdraw',
@@ -760,7 +793,7 @@ export function OnlineApp() {
       <ConfirmDialog
         open={confirmLeave && inProgress}
         title="离开房间？"
-        description="对局还没结束。离开后房间会关闭，对方也无法继续。"
+        description="对局尚未结束。离开后房间将关闭，对局无法继续。"
         cancelLabel="继续对局"
         confirmLabel="离开房间"
         destructive

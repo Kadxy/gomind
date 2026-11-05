@@ -331,7 +331,7 @@ export class RoomConnection {
         return;
       case CLOSE_REPLACED:
         this.active = false;
-        this.set({ status: 'error', error: '已在另一个标签页或窗口中继续对局' });
+        this.set({ status: 'error', error: '该对局已在其他标签页中打开' });
         return;
       case CLOSE_NOT_FOUND:
         if (this.welcomed) {

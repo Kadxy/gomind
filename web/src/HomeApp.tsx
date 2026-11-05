@@ -17,13 +17,13 @@ export function HomeApp({ onNavigate }: HomeAppProps) {
           onClick={() => onNavigate('local')}
           icon={<Gamepad2 className="size-5" strokeWidth={1.75} />}
           title="单机"
-          subtitle="自己玩或者和 AI 对弈"
+          subtitle="同屏对弈、人机对弈与局面分析"
         />
         <ModeCard
           onClick={() => onNavigate('online')}
           icon={<Users className="size-5" strokeWidth={1.75} />}
           title="联机"
-          subtitle="和朋友远程对战"
+          subtitle="与其他玩家在线对局"
         />
       </div>
     </main>

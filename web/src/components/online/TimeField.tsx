@@ -105,6 +105,11 @@ export function TimeField({
               value={draft}
               disabled={disabled}
               inputMode="numeric"
+              autoComplete="off"
+              data-1p-ignore="true"
+              data-lpignore="true"
+              data-bwignore="true"
+              data-form-type="other"
               aria-label={`自定义${label}（${unit}）`}
               onChange={(e) => {
                 const raw = e.target.value.replace(/\D/g, '').slice(0, 3);
