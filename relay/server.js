@@ -31,6 +31,8 @@
 //   ALLOWED_ORIGINS  comma-separated Origin allowlist; '*' = any
 //   STATIC_DIR       serve this directory (web/dist) with SPA fallback
 //   GRACE_MS         how long a dropped seat is held (default 90000)
+//   CLAIM_MS         how long a created room waits for its host (default 20000)
+//   MAX_UNCLAIMED    cap on created-but-unjoined rooms (default 200)
 
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -43,7 +45,13 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '*')
 const STATIC_DIR = process.env.STATIC_DIR ? path.resolve(process.env.STATIC_DIR) : null;
 const GRACE_MS = Number(process.env.GRACE_MS ?? 90_000);
 // A room created over POST whose host never connects is dropped after this.
-const CLAIM_MS = Number(process.env.CLAIM_MS ?? 60_000);
+const CLAIM_MS = Number(process.env.CLAIM_MS ?? 20_000);
+// Rooms created over POST but not yet joined. Creation is unauthenticated,
+// so this bounds how much of the 4-digit space a script can squat on.
+const MAX_UNCLAIMED = Number(process.env.MAX_UNCLAIMED ?? 200);
+// Requests and frames are tiny (a full-board sync is ~3 KB).
+const MAX_BODY_BYTES = 16 * 1024;
+const MAX_FRAME_BYTES = 64 * 1024;
 const ROOM_CAP = 2;
 // A socket we've heard nothing from (no message, no pong) for this long is
 // presumed dead: its seat enters the grace window and the opponent's clock
@@ -131,7 +139,11 @@ function others(room, peerId) {
 
 function destroyRoom(room, code, reason) {
   if (!rooms.delete(room.id)) return;
-  if (room.claimTimer) clearTimeout(room.claimTimer);
+  if (room.claimTimer) {
+    clearTimeout(room.claimTimer);
+    room.claimTimer = null;
+    unclaimed -= 1;
+  }
   for (const seat of room.seats.values()) {
     if (seat.awayTimer) clearTimeout(seat.awayTimer);
     const ws = seat.ws;
@@ -144,14 +156,19 @@ function destroyRoom(room, code, reason) {
   console.log(`[room ${room.id}] destroyed (${reason})`);
 }
 
+let unclaimed = 0;
+
 function createRoom(hostPeer) {
+  if (unclaimed >= MAX_UNCLAIMED) return null;
   const id = allocRoomId();
   if (!id) return null;
   /** @type {Room} */
   const room = { id, seats: new Map(), claimTimer: null };
   room.seats.set(hostPeer, { ws: null, role: 'host', connectedOnce: false, awayTimer: null });
+  unclaimed += 1;
   room.claimTimer = setTimeout(() => {
     room.claimTimer = null;
+    unclaimed -= 1;
     const anyOnline = [...room.seats.values()].some((s) => s.ws);
     if (!anyOnline) destroyRoom(room, CLOSE_PEER_GONE, 'unclaimed');
   }, CLAIM_MS);
@@ -192,7 +209,12 @@ async function serveStatic(pathname) {
     if (!s?.isFile()) return notFound();
   }
   return new Response(Bun.file(abs), {
-    headers: { ...COI_HEADERS, 'Cache-Control': cacheControlFor(pathname) },
+    headers: {
+      ...COI_HEADERS,
+      'Cache-Control': cacheControlFor(pathname),
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'strict-origin-when-cross-origin',
+    },
   });
 }
 
@@ -201,6 +223,7 @@ async function serveStatic(pathname) {
 const server = Bun.serve({
   port: PORT,
   hostname: '0.0.0.0',
+  maxRequestBodySize: MAX_BODY_BYTES,
   async fetch(req, srv) {
     const url = new URL(req.url);
 
@@ -233,7 +256,7 @@ const server = Bun.serve({
         return Response.json({ error: 'bad peer id' }, { status: 400, headers: cors });
       }
       const room = createRoom(peer);
-      if (!room) return Response.json({ error: 'no rooms left' }, { status: 503, headers: cors });
+      if (!room) return Response.json({ error: 'busy' }, { status: 503, headers: cors });
       return Response.json({ id: room.id, grace: GRACE_MS }, { headers: cors });
     }
 
@@ -254,6 +277,7 @@ const server = Bun.serve({
   websocket: {
     // Backstop only; liveness is tracked via lastSeen (see the ping loop).
     idleTimeout: 120,
+    maxPayloadLength: MAX_FRAME_BYTES,
     open(ws) {
       ws.data.lastSeen = Date.now();
       const { roomId, peerId } = ws.data;
@@ -287,6 +311,7 @@ const server = Bun.serve({
       if (room.claimTimer) {
         clearTimeout(room.claimTimer);
         room.claimTimer = null;
+        unclaimed -= 1;
       }
 
       const rejoined = seat.connectedOnce;

@@ -122,6 +122,11 @@ export class RoomConnection {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ peer: this.peerId() }),
       });
+      if (r.status === 503) {
+        if (gen !== this.gen) return null;
+        this.set({ status: 'error', error: '服务器繁忙，请稍后再试' });
+        return null;
+      }
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const { id } = (await r.json()) as { id: string };
       if (gen !== this.gen) return null;

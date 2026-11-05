@@ -16,4 +16,7 @@ ENV NODE_ENV=production \
 COPY relay ./relay
 COPY --from=build /app/web/dist ./web/dist
 EXPOSE 8000
+# The image ships an unprivileged `bun` user; files above stay root-owned
+# and read-only to it.
+USER bun
 CMD ["bun", "run", "relay/server.js"]

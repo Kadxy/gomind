@@ -312,3 +312,36 @@ test('CORS respects an ALLOWED_ORIGINS allowlist', async () => {
     relay.kill();
   }
 });
+
+test('creation is refused once too many rooms wait to be claimed', async () => {
+  const port = PORT + 3;
+  const relay = Bun.spawn(['bun', 'run', 'relay/server.js'], {
+    env: { ...process.env, PORT: String(port), MAX_UNCLAIMED: '3', CLAIM_MS: '500' },
+    stdout: 'ignore',
+    stderr: 'inherit',
+  });
+  try {
+    for (let i = 0; i < 50; i++) {
+      try {
+        if ((await fetch(`http://localhost:${port}/health`)).ok) break;
+      } catch {}
+      await sleep(100);
+    }
+    const create = (n) =>
+      fetch(`http://localhost:${port}/rooms`, {
+        method: 'POST',
+        body: JSON.stringify({ peer: `capcheck${String(n).padStart(4, '0')}` }),
+      });
+    for (let i = 0; i < 3; i++) expect((await create(i)).status).toBe(200);
+    expect((await create(9)).status).toBe(503);
+    await sleep(800); // unclaimed rooms expire, freeing the budget
+    expect((await create(10)).status).toBe(200);
+    const big = await fetch(`http://localhost:${port}/rooms`, {
+      method: 'POST',
+      body: JSON.stringify({ peer: 'bigbody00001', pad: 'x'.repeat(64 * 1024) }),
+    });
+    expect(big.status).toBe(413);
+  } finally {
+    relay.kill();
+  }
+});
