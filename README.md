@@ -21,6 +21,22 @@ is a lightweight WebSocket relay used for online play.
 
 Games use freestyle rules on a 15×15 board: five or more stones in a row wins.
 
+## Screenshots
+
+**Human vs. AI** with live analysis: candidate moves on the board, evaluation, and win rate.
+
+![Human vs. AI with candidate moves and win rate](docs/screenshots/local-analysis.png)
+
+**Online play** with per-player clocks. Undo, draw, and restart need the opponent's consent.
+
+![Online game in progress](docs/screenshots/online-game.png)
+
+<p align="center">
+  <img src="docs/screenshots/mobile-choose.png" alt="Joining or creating a room on a phone" width="260">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/mobile-game.png" alt="Online game on a phone" width="260">
+</p>
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -135,6 +151,8 @@ In that case, set `VITE_RELAY_WS_URL` at build time to point to the relay (for e
 | `ALLOWED_ORIGINS` | `*` | Relay | Comma-separated list of origins allowed to open WebSocket connections; supports `*` wildcards |
 | `GRACE_MS` | `90000` | Relay | How long a disconnected player's seat is held before the room closes |
 | `DEAD_AFTER_MS` | `15000` | Relay | Silence after which a connection is treated as dropped |
+| `CLAIM_MS` | `20000` | Relay | How long a newly created room waits for its host to connect |
+| `MAX_UNCLAIMED` | `200` | Relay | Maximum number of created rooms still waiting for their host |
 | `BIND` | `127.0.0.1:8000` | Docker Compose | Host address and port the container is published on |
 | `DOMAIN` | — | Caddy overlay | Hostname that Caddy serves and obtains a certificate for; `:80` for plain HTTP |
 | `VITE_RELAY_WS_URL` | same origin | Frontend build | WebSocket base URL of the relay |

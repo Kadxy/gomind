@@ -17,6 +17,22 @@ Gomind 是一个基于浏览器的五子棋应用，核心为编译成 WebAssemb
 
 对局采用无禁手规则，棋盘为 15×15，五子或以上连珠即获胜。
 
+## 截图
+
+**人机对弈**与实时分析：棋盘上标出候选手，并显示形势评估与胜率。
+
+![人机对弈，显示候选手与胜率](docs/screenshots/local-analysis.png)
+
+**联机对局**：双方各自计时，悔棋、求和、重开需对方同意。
+
+![联机对局进行中](docs/screenshots/online-game.png)
+
+<p align="center">
+  <img src="docs/screenshots/mobile-choose.png" alt="手机上加入或创建房间" width="260">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/mobile-game.png" alt="手机上的联机对局" width="260">
+</p>
+
 ## 技术栈
 
 | 层级 | 技术 |
@@ -122,6 +138,8 @@ PORT=8000 bun run start    # 等同于：STATIC_DIR=web/dist bun run relay/serve
 | `ALLOWED_ORIGINS` | `*` | 中转服务 | 允许建立 WebSocket 连接的来源，逗号分隔，支持 `*` 通配 |
 | `GRACE_MS` | `90000` | 中转服务 | 掉线玩家的座位保留时长，超时后房间关闭 |
 | `DEAD_AFTER_MS` | `15000` | 中转服务 | 连接静默多久视为掉线 |
+| `CLAIM_MS` | `20000` | 中转服务 | 新建房间等待房主连接的时长 |
+| `MAX_UNCLAIMED` | `200` | 中转服务 | 已创建但房主尚未连接的房间数上限 |
 | `BIND` | `127.0.0.1:8000` | Docker Compose | 容器在宿主机上发布的地址与端口 |
 | `DOMAIN` | — | Caddy 叠加配置 | Caddy 提供服务并申请证书的域名；设为 `:80` 时使用纯 HTTP |
 | `VITE_RELAY_WS_URL` | 同源 | 前端构建 | 中转服务的 WebSocket 基础地址 |
