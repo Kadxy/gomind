@@ -1,13 +1,11 @@
 import { Board } from '@/components/Board';
-import { OnlineGate } from '@/components/OnlineGate';
-import { OnlineActions } from '@/components/online/OnlineActions';
-import { type NoticeSpec, OnlineNotice } from '@/components/online/OnlineNotice';
+import { Lobby, type LobbyTab, WaitingRoom } from '@/components/OnlineGate';
+import { type DockAction, type DockSpec, OnlineDock } from '@/components/online/OnlineDock';
 import { PlayerBar, type Presence } from '@/components/online/PlayerBar';
 import {
   clockFromSnapshot,
   clockView,
   describeResult,
-  describeTimeControl,
   newClock,
   snapshotClock,
   undoTarget,
@@ -29,6 +27,7 @@ import {
   saveCreatePrefs,
   saveSession,
 } from '@/lib/onlineStorage';
+import { Flag, Handshake, LogOut, RotateCcw, Undo2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 const other = (s: Stone): Stone => (s === 1 ? 2 : 1);
@@ -39,9 +38,9 @@ const sideOf = (role: RoomRole | null, hostSide: Stone): Stone =>
 // leaving room for a last-second move that's still in flight. The flagged
 // side's own client claims at zero.
 const FLAG_LATENCY_ALLOWANCE_MS = 1500;
-const FLASH_MS = 3500;
+const FLASH_MS = 2500;
 
-const REQ_NAME: Record<RequestKind, string> = { undo: '悔棋', draw: '和棋', reset: '重开' };
+const REQ_NAME: Record<RequestKind, string> = { undo: '悔棋', draw: '求和', reset: '重开' };
 
 function roomFromUrl(): string | null {
   if (typeof window === 'undefined') return null;
@@ -71,8 +70,6 @@ function restoredMatch(s: SavedSession, now: number): Omit<MatchState, 'pending'
   };
 }
 
-type Flash = { text: string; tone: NoticeSpec['tone'] };
-
 export function OnlineApp() {
   const { state: match, stateRef, apply } = useOnlineMatch();
 
@@ -82,11 +79,14 @@ export function OnlineApp() {
   const roleRef = useRef<RoomRole | null>(null);
   // We pressed 离开 (or the room closed under us): keep the board on screen.
   const [left, setLeft] = useState(false);
-  const [flash, setFlash] = useState<Flash | null>(null);
+  // Lobby form state lives here so a deep link can prefill and submit it.
+  const [tab, setTab] = useState<LobbyTab>('join');
+  const [code, setCode] = useState('');
+  const [flash, setFlash] = useState<string | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showFlash = useCallback((text: string, tone: Flash['tone'] = 'info') => {
+  const showFlash = useCallback((text: string) => {
     if (flashTimer.current) clearTimeout(flashTimer.current);
-    setFlash({ text, tone });
+    setFlash(text);
     flashTimer.current = setTimeout(() => setFlash(null), FLASH_MS);
   }, []);
   useEffect(
@@ -113,7 +113,6 @@ export function OnlineApp() {
         if (ev.role === 'host' && ev.online > 0 && !s.started) {
           apply({ type: 'start', now });
           sendSync();
-          showFlash(`对局开始，你执${mySide() === 1 ? '黑先行' : '白后行'}`, 'success');
         }
         // Otherwise wait: whoever was already here sends us a sync.
         return;
@@ -123,13 +122,12 @@ export function OnlineApp() {
         if (roleRef.current === 'host' && !s.started) {
           apply({ type: 'start', now });
           sendSync();
-          showFlash(`对局开始，你执${mySide() === 1 ? '黑先行' : '白后行'}`, 'success');
         } else if (s.started) {
           // We stayed; we're the source of truth. Resume clocks, then send
           // everything so the returning side's board matches ours exactly.
           apply({ type: 'resume', now });
           sendSync();
-          if (ev.type === 'peer_back') showFlash('对方已重新连接', 'success');
+          if (ev.type === 'peer_back') showFlash('对方已重新连接');
         }
         return;
       }
@@ -150,15 +148,9 @@ export function OnlineApp() {
     const s = stateRef.current;
     const me = mySide();
     switch (msg.t) {
-      case 'sync': {
-        const wasStarted = s.started;
+      case 'sync':
         apply({ type: 'adoptSync', msg, now });
-        if (!wasStarted) {
-          const side = sideOf(roleRef.current, msg.hostSide);
-          showFlash(`对局开始，你执${side === 1 ? '黑先行' : '白后行'}`, 'success');
-        }
         return;
-      }
       case 'sync_req':
         if (s.started) sendSync();
         return;
@@ -222,20 +214,17 @@ export function OnlineApp() {
           else if (msg.t === 'reset_ack')
             apply({ type: 'newGame', timeControl: msg.timeControl, now });
           else apply({ type: 'finish', result: { kind: 'draw', winner: 0 } });
-          showFlash(
-            kind === 'draw' ? '对方同意和棋' : `对方同意${REQ_NAME[kind]}`,
-            kind === 'reset' ? 'success' : 'info',
-          );
+          if (kind === 'undo') showFlash('对方同意了悔棋');
         } else {
           if (s.pending?.dir === 'out' && s.pending.kind === kind) apply({ type: 'pendingClear' });
-          showFlash(`对方拒绝了${REQ_NAME[kind]}请求`, 'muted');
+          showFlash(`对方拒绝了${REQ_NAME[kind]}`);
         }
         return;
       }
       case 'req_cancel':
         if (s.pending?.dir === 'in' && s.pending.kind === msg.kind) {
           apply({ type: 'pendingClear' });
-          showFlash(`对方撤回了${REQ_NAME[msg.kind]}请求`, 'muted');
+          showFlash(`对方撤回了${REQ_NAME[msg.kind]}请求`);
         }
         return;
       case 'ping':
@@ -272,8 +261,8 @@ export function OnlineApp() {
     else sendRef.current({ t: 'reset_ack', ok: false, timeControl: s.timeControl });
   }
 
-  /** Our move declines anything they asked and withdraws anything we asked. */
-  function settlePendingBeforeMove() {
+  /** Resigning settles whatever request is open first. */
+  function settlePending() {
     const p = stateRef.current.pending;
     if (!p) return;
     if (p.dir === 'in') declineRequest(p.kind, p.to);
@@ -301,8 +290,7 @@ export function OnlineApp() {
       setUrlRoom(saved.roomId);
       room.join(saved.roomId);
     } else if (urlRoom) {
-      clearSession();
-      room.join(urlRoom);
+      handleJoin(urlRoom);
     }
   }, []);
 
@@ -412,6 +400,7 @@ export function OnlineApp() {
     roleRef.current = 'host';
     setSavedRole('host');
     setLeft(false);
+    setTab('create');
     const id = await room.create();
     if (id) setUrlRoom(id);
   };
@@ -421,14 +410,15 @@ export function OnlineApp() {
     roleRef.current = null;
     setSavedRole(null);
     setLeft(false);
+    setTab('join');
+    setCode(id);
     clearSession();
     room.join(id);
   };
 
-  const handleRetry = () => {
-    const id = room.roomId;
-    if (id) handleJoin(id);
-    else backToLobby();
+  /** Editing the form after a failed attempt clears the error. */
+  const resetAttempt = () => {
+    if (room.status === 'error' || room.status === 'ended') room.leave();
   };
 
   const handleLeaveGame = () => {
@@ -443,8 +433,7 @@ export function OnlineApp() {
     const s = stateRef.current;
     const me = mySide();
     if (room.status !== 'ready' || !s.started || s.result) return;
-    if (s.game.toMove !== me || s.clock.pausedAt !== null) return;
-    settlePendingBeforeMove();
+    if (s.game.toMove !== me || s.clock.pausedAt !== null || s.pending) return;
     const before = s.game.history.length;
     const next = apply({ type: 'move', x, y, now: Date.now() });
     if (next.game.history.length === before) return;
@@ -471,7 +460,7 @@ export function OnlineApp() {
   const resign = () => {
     const s = stateRef.current;
     if (s.result || !s.started) return;
-    if (s.pending) settlePendingBeforeMove();
+    if (s.pending) settlePending();
     apply({ type: 'finish', result: { kind: 'resign', winner: other(mySide()) } });
     room.send({ t: 'resign', n: s.game.history.length });
   };
@@ -481,59 +470,211 @@ export function OnlineApp() {
   const role = room.role ?? savedRole;
   const me = sideOf(role, match.hostSide);
   const closed = left || room.status === 'ended' || room.status === 'error';
+  const st = room.status;
 
   if (!match.started && !left) {
+    const host = role === 'host';
+    if (host && room.roomId && st !== 'idle' && st !== 'error' && st !== 'ended') {
+      if (st !== 'connecting' || tab !== 'create') {
+        return (
+          <WaitingRoom
+            roomId={room.roomId}
+            hostSide={match.hostSide}
+            timeControl={match.timeControl}
+            peerDropped={st === 'peer_away'}
+            onCancel={backToLobby}
+          />
+        );
+      }
+    }
+    // Guest: the join button keeps spinning until the host's sync arrives.
+    const busy = st !== 'idle' && st !== 'error' && st !== 'ended';
+    const error = st === 'error' ? room.error : st === 'ended' ? '房间已关闭' : null;
     return (
-      <OnlineGate
-        status={room.status}
-        error={room.error}
-        roomId={room.roomId}
-        isHost={role === 'host'}
-        hostSide={match.hostSide}
-        timeControl={match.timeControl}
-        awayUntil={room.awayUntil}
-        endedText={room.endReason === 'lost' ? '连接已断开' : '对方已离开房间'}
-        onCreate={handleCreate}
+      <Lobby
+        tab={tab}
+        onTab={(t) => {
+          resetAttempt();
+          setTab(t);
+        }}
+        code={code}
+        onCode={(c) => {
+          resetAttempt();
+          setCode(c);
+        }}
+        busy={busy}
+        error={error}
+        info={!host && st === 'peer_away' ? '房主暂时离线，回来后自动开始' : null}
         onJoin={handleJoin}
-        onBack={backToLobby}
-        onRetry={handleRetry}
+        onCreate={handleCreate}
+        onCancel={backToLobby}
       />
     );
   }
 
-  const live = room.status === 'ready' && !closed && match.clock.pausedAt === null;
-  const presence: Presence = closed ? 'gone' : room.status === 'ready' ? 'online' : 'away';
+  const live = st === 'ready' && !closed && match.clock.pausedAt === null;
+  const presence: Presence = closed ? 'gone' : st === 'ready' ? 'online' : 'away';
   const { game, result, pending } = match;
-  const canPlay = live && !result && me !== 0 && game.toMove === me;
+  const canPlay = live && !result && !pending && me !== 0 && game.toMove === me;
   const undoTo = me !== 0 ? undoTarget(game.history.length, game.toMove, me) : null;
-  const act = live && !pending;
+  const inProgress = !result && !closed;
 
-  const notice = pickNotice({
-    closed,
-    left,
-    status: room.status,
-    endReason: room.endReason,
-    error: room.error,
-    awayUntil: room.awayUntil,
-    pending,
-    flash,
-    result,
-    me,
-    onAccept: () => pending && acceptRequest(pending),
-    onDecline: () => {
-      if (!pending) return;
-      declineRequest(pending.kind, pending.to);
-      apply({ type: 'pendingClear' });
-    },
-    onCancel: () => {
-      if (!pending) return;
-      room.send({ t: 'req_cancel', kind: pending.kind });
-      apply({ type: 'pendingClear' });
-    },
-  });
+  const leave: DockAction = {
+    key: 'leave',
+    label: '离开',
+    icon: <LogOut className={ICON} />,
+    variant: 'ghost',
+    onClick: handleLeaveGame,
+    confirm: inProgress ? { label: '确认离开', destructive: true } : undefined,
+  };
+
+  let dock: DockSpec;
+  if (closed) {
+    const title =
+      result && result.kind !== 'abandon' ? describeResult(result, me || null).title : undefined;
+    dock = {
+      kind: 'message',
+      strong: title,
+      text: left
+        ? '你已离开房间'
+        : st === 'error'
+          ? (room.error ?? '房间已关闭')
+          : room.endReason === 'lost'
+            ? '连接已断开'
+            : '对方已离开房间',
+      tone: title ? 'default' : 'muted',
+      actions: [{ key: 'back', label: '返回大厅', variant: 'default', onClick: backToLobby }],
+    };
+  } else if (st === 'connecting' || st === 'reconnecting') {
+    dock = {
+      kind: 'message',
+      tone: 'muted',
+      text: st === 'reconnecting' ? '连接中断，正在重连…' : '正在连接…',
+      actions: [leave],
+    };
+  } else if (st === 'peer_away') {
+    dock = {
+      kind: 'message',
+      tone: 'warn',
+      text: '对方连接中断，计时已暂停',
+      countdownTo: room.awayUntil,
+      actions: [leave],
+    };
+  } else if (pending?.dir === 'in') {
+    const back = pending.to !== undefined ? game.history.length - pending.to : 0;
+    dock = {
+      kind: 'message',
+      text:
+        pending.kind === 'undo'
+          ? `对方请求悔棋${back > 1 ? `（退 ${back} 手）` : ''}`
+          : pending.kind === 'draw'
+            ? '对方提议和棋'
+            : result
+              ? '对方想再来一局'
+              : '对方请求重开',
+      actions: [
+        {
+          key: 'accept',
+          label: '同意',
+          variant: 'default',
+          onClick: () => acceptRequest(pending),
+        },
+        {
+          key: 'decline',
+          label: '拒绝',
+          onClick: () => {
+            declineRequest(pending.kind, pending.to);
+            apply({ type: 'pendingClear' });
+          },
+        },
+      ],
+    };
+  } else if (pending?.dir === 'out') {
+    const what =
+      pending.kind === 'undo'
+        ? '悔棋'
+        : pending.kind === 'draw'
+          ? '求和'
+          : result
+            ? '再来一局'
+            : '重开';
+    dock = {
+      kind: 'message',
+      tone: 'muted',
+      text: `已请求${what}，等待对方回应…`,
+      actions: [
+        {
+          key: 'withdraw',
+          label: '撤回',
+          onClick: () => {
+            room.send({ t: 'req_cancel', kind: pending.kind });
+            apply({ type: 'pendingClear' });
+          },
+        },
+      ],
+    };
+  } else if (flash) {
+    dock = { kind: 'message', tone: 'muted', text: flash };
+  } else if (result) {
+    const { title, detail } = describeResult(result, me || null);
+    dock = {
+      kind: 'message',
+      strong: title,
+      text: detail,
+      actions: [
+        {
+          key: 'rematch',
+          label: '再来一局',
+          variant: 'default',
+          disabled: !live,
+          onClick: () => request('reset'),
+        },
+        leave,
+      ],
+    };
+  } else {
+    dock = {
+      kind: 'actions',
+      actions: [
+        {
+          key: 'undo',
+          label: '悔棋',
+          icon: <Undo2 className={ICON} />,
+          disabled: !live || undoTo === null,
+          onClick: () => request('undo'),
+          confirm: { label: '确认悔棋' },
+        },
+        {
+          key: 'draw',
+          label: '求和',
+          icon: <Handshake className={ICON} />,
+          disabled: !live || game.history.length === 0,
+          onClick: () => request('draw'),
+          confirm: { label: '确认求和' },
+        },
+        {
+          key: 'resign',
+          label: '认输',
+          icon: <Flag className={ICON} />,
+          disabled: !live,
+          onClick: resign,
+          confirm: { label: '确认认输', destructive: true },
+        },
+        {
+          key: 'reset',
+          label: '重开',
+          icon: <RotateCcw className={ICON} />,
+          disabled: !live || game.history.length === 0,
+          onClick: () => request('reset'),
+          confirm: { label: '确认重开' },
+        },
+      ],
+      trailing: [leave],
+    };
+  }
 
   return (
-    <main className="flex-1 min-h-0 flex flex-col items-center gap-2 sm:gap-3 p-3 sm:p-5">
+    <main className="flex-1 min-h-0 flex flex-col items-center gap-3 p-3 sm:p-5">
       <PlayerBar
         clock={match.clock}
         mySide={me === 0 ? 1 : me}
@@ -542,17 +683,6 @@ export function OnlineApp() {
         result={result}
         live={live}
         opponent={presence}
-      />
-      <OnlineNotice
-        notice={notice}
-        fallback={
-          room.roomId ? (
-            <>
-              房间 <span className="font-mono">{room.roomId}</span> ·{' '}
-              {describeTimeControl(match.timeControl)} · 第 {game.history.length} 手
-            </>
-          ) : null
-        }
       />
       <div
         className="flex-1 min-h-0 w-full flex items-center justify-center"
@@ -570,95 +700,12 @@ export function OnlineApp() {
           />
         </div>
       </div>
-      <OnlineActions
-        canUndo={act && !result && undoTo !== null}
-        canDraw={act && !result && game.history.length > 0}
-        canResign={live && !result}
-        canReset={act}
-        finished={result !== null}
-        confirmLeave={!closed && !result}
-        closed={closed}
-        onUndo={() => request('undo')}
-        onDraw={() => request('draw')}
-        onResign={resign}
-        onReset={() => request('reset')}
-        onLeave={closed ? backToLobby : handleLeaveGame}
+      <OnlineDock
+        spec={dock}
+        resetKey={`${game.history.length}|${pending?.kind ?? ''}|${st}|${result ? 1 : 0}`}
       />
     </main>
   );
 }
 
-// ---------------------------------------------------------------- notices
-
-function pickNotice(o: {
-  closed: boolean;
-  left: boolean;
-  status: string;
-  endReason: string | null;
-  error: string | null;
-  awayUntil: number | null;
-  pending: MatchState['pending'];
-  flash: Flash | null;
-  result: MatchState['result'];
-  me: Stone;
-  onAccept: () => void;
-  onDecline: () => void;
-  onCancel: () => void;
-}): NoticeSpec | null {
-  if (o.closed) {
-    const text = o.left
-      ? '你已离开房间'
-      : o.status === 'error'
-        ? (o.error ?? '房间已关闭')
-        : o.endReason === 'lost'
-          ? '连接已断开，房间已关闭'
-          : '对方已离开房间';
-    return { tone: 'muted', text: resultPrefix(o.result, o.me) + text };
-  }
-  if (o.status === 'reconnecting') return { tone: 'warn', text: '连接中断，正在重连… 计时已暂停' };
-  if (o.status === 'connecting') return { tone: 'info', text: '正在连接房间…' };
-  if (o.status === 'peer_away') {
-    return { tone: 'warn', text: '对方连接中断，计时已暂停 · 等待重连', countdownTo: o.awayUntil };
-  }
-  const p = o.pending;
-  if (p?.dir === 'in') {
-    const what =
-      p.kind === 'undo'
-        ? `对方请求悔棋${p.to !== undefined ? `（退回到第 ${p.to} 手）` : ''}`
-        : p.kind === 'draw'
-          ? '对方提议和棋'
-          : o.result
-            ? '对方想再来一局'
-            : '对方请求重开';
-    return {
-      tone: 'info',
-      text: what,
-      actions: [
-        { label: '同意', onClick: o.onAccept, primary: true },
-        { label: '拒绝', onClick: o.onDecline },
-      ],
-    };
-  }
-  if (p?.dir === 'out') {
-    const what =
-      p.kind === 'undo' ? '悔棋' : p.kind === 'draw' ? '和棋' : o.result ? '再来一局' : '重开';
-    return {
-      tone: 'muted',
-      text: `已请求${what}，等待对方回应…`,
-      actions: [{ label: '撤回', onClick: o.onCancel }],
-    };
-  }
-  if (o.flash) return { tone: o.flash.tone, text: o.flash.text };
-  if (o.result) {
-    const { title, detail } = describeResult(o.result, o.me || null);
-    const won = o.result.winner !== 0 && o.result.winner === o.me;
-    return { tone: won ? 'success' : 'muted', text: `${title} · ${detail}` };
-  }
-  return null;
-}
-
-function resultPrefix(result: MatchState['result'], me: Stone): string {
-  if (!result || result.kind === 'abandon') return '';
-  const { title } = describeResult(result, me || null);
-  return `${title} · `;
-}
+const ICON = 'size-4 hidden sm:block';

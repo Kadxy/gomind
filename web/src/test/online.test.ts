@@ -30,6 +30,10 @@ describe('describeTimeControl', () => {
     expect(describeTimeControl({ main: 600_000, perMove: null })).toBe('局时 10 分');
     expect(describeTimeControl({ main: null, perMove: 30_000 })).toBe('步时 30 秒');
     expect(describeTimeControl({ main: 300_000, perMove: 120_000 })).toBe('局时 5 分 · 步时 2 分');
+    expect(describeTimeControl({ main: 45 * 60_000, perMove: 90_000 })).toBe(
+      '局时 45 分 · 步时 1 分 30 秒',
+    );
+    expect(describeTimeControl({ main: null, perMove: 5_000 })).toBe('步时 5 秒');
   });
 });
 

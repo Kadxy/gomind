@@ -18,19 +18,31 @@ export const PER_MOVE_OPTIONS: { value: number | null; label: string }[] = [
   { value: 60_000, label: '60 秒' },
 ];
 
+/** Bounds for custom values on the create-room form. */
+export const MAIN_MINUTES_RANGE = { min: 1, max: 120 } as const;
+export const PER_MOVE_SECONDS_RANGE = { min: 5, max: 300 } as const;
+
 export const UNLIMITED: TimeControl = { main: null, perMove: null };
 
 export function isTimed(tc: TimeControl): boolean {
   return tc.main !== null || tc.perMove !== null;
 }
 
+export const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
+
+/** "45 秒", "2 分", "1 分 30 秒". */
+export function formatDuration(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} 秒`;
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r ? `${m} 分 ${r} 秒` : `${m} 分`;
+}
+
 export function describeTimeControl(tc: TimeControl): string {
   const parts: string[] = [];
-  if (tc.main !== null) parts.push(`局时 ${Math.round(tc.main / 60_000)} 分`);
-  if (tc.perMove !== null) {
-    const s = tc.perMove / 1000;
-    parts.push(`步时 ${s >= 60 ? `${s / 60} 分` : `${s} 秒`}`);
-  }
+  if (tc.main !== null) parts.push(`局时 ${formatDuration(tc.main)}`);
+  if (tc.perMove !== null) parts.push(`步时 ${formatDuration(tc.perMove)}`);
   return parts.length ? parts.join(' · ') : '不限时';
 }
 

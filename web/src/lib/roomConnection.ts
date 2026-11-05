@@ -333,7 +333,7 @@ export class RoomConnection {
           this.end('lost');
         } else {
           this.active = false;
-          this.set({ status: 'error', error: '房间不存在或已关闭' });
+          this.set({ status: 'error', error: '房间不存在' });
         }
         return;
     }
