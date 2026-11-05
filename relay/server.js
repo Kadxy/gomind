@@ -1,24 +1,35 @@
-// Minimal WebSocket relay for Gomind remote play, plus optional static
-// hosting of the built frontend so the whole app runs as ONE process.
+// WebSocket relay for Gomind remote play, plus optional static hosting of the
+// built frontend so the whole app runs as ONE process.
 //
-// One room = one URL path. Server never parses game messages; it just
-// fans out every client message to the other peer(s) in the same room.
+// The relay never parses game messages; it fans every client message out to
+// the other peer in the same room. What it does track is *seats*: who is in
+// a room, keyed by a per-browser peer id, so a refresh or a dropped network
+// can come back to the same seat within a grace window.
 //
-// URL: wss://host/room/<ID>  where ID is exactly 4 digits.
+// HTTP:
+//   POST /rooms  {peer}      -> {id, grace}  allocate a free 4-digit room,
+//                              reserving the host seat for `peer`
+//   GET  /health             -> {ok, rooms}
+//   GET  /room/<ID>?peer=ID  WebSocket (upgrade)
 //
-// Behavior ("人满为患"):
-//   - Max 2 peers per room; 3rd is rejected with close(4002, 'room full').
-//   - If ANY peer disconnects, the room is torn down for everyone — the
-//     remaining peer(s) get close(4001, 'peer disconnected'), the room
-//     map entry is deleted, and the number becomes reusable immediately.
-//   - Clients send {t:'ping'} every ~30s as an app-level heartbeat; we
-//     eat those here (don't forward) — the read alone resets idleTimeout.
+// Server -> client control messages (JSON, `type` field):
+//   welcome     {role, peers, online, rejoined, grace}
+//   peer_joined                a new peer took the other seat
+//   peer_away   {grace}        the other peer dropped; seat held for `grace` ms
+//   peer_back                  the other peer reconnected to their seat
+//   pong                       reply to a client {t:'ping'}
+//
+// Close codes:
+//   4000 (client -> server)  explicit leave: room is torn down at once
+//   4001  peer disconnected: the other seat left or its grace expired
+//   4002  room full          4003  replaced by a newer connection with the
+//   4004  room not found           same peer id (e.g. a second tab)
 //
 // Env:
 //   PORT             listen port (default 8000)
-//   ALLOWED_ORIGINS  comma-separated Origin allowlist for WS upgrades; '*' = any
-//   STATIC_DIR       if set, serve this directory (the Vite build, web/dist)
-//                    for every non-room path, with SPA fallback to index.html
+//   ALLOWED_ORIGINS  comma-separated Origin allowlist; '*' = any
+//   STATIC_DIR       serve this directory (web/dist) with SPA fallback
+//   GRACE_MS         how long a dropped seat is held (default 90000)
 
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
@@ -28,19 +39,43 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? '*')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
-const ROOM_CAP = 2;
 const STATIC_DIR = process.env.STATIC_DIR ? path.resolve(process.env.STATIC_DIR) : null;
+const GRACE_MS = Number(process.env.GRACE_MS ?? 90_000);
+// A room created over POST whose host never connects is dropped after this.
+const CLAIM_MS = Number(process.env.CLAIM_MS ?? 60_000);
+const ROOM_CAP = 2;
+// A socket we've heard nothing from (no message, no pong) for this long is
+// presumed dead: its seat enters the grace window and the opponent's clock
+// pauses. Bun's own idleTimeout can't do this, because our pings count as
+// activity for it. We ping at a third of that, so a live client answers
+// at least twice before the deadline.
+const DEAD_AFTER_MS = Number(process.env.DEAD_AFTER_MS ?? 15_000);
+const SERVER_PING_INTERVAL_MS = Math.min(5_000, Math.floor(DEAD_AFTER_MS / 3));
+
+const CLOSE_LEAVE = 4000;
+const CLOSE_PEER_GONE = 4001;
+const CLOSE_ROOM_FULL = 4002;
+const CLOSE_REPLACED = 4003;
+const CLOSE_NOT_FOUND = 4004;
 
 // Cross-origin isolation headers expose SharedArrayBuffer, which the
-// threaded Rapfi build probes for. Mirrors vite.config.ts; the
-// single-threaded build ignores them harmlessly.
+// threaded Rapfi build probes for. Mirrors vite.config.ts.
 const COI_HEADERS = {
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Embedder-Policy': 'require-corp',
 };
 
-/** @type {Map<string, Set<any>>} */
+/**
+ * @typedef {{ ws: any | null, role: 'host' | 'guest', connectedOnce: boolean,
+ *             awayTimer: ReturnType<typeof setTimeout> | null }} Seat
+ * @typedef {{ id: string, seats: Map<string, Seat>,
+ *             claimTimer: ReturnType<typeof setTimeout> | null }} Room
+ */
+/** @type {Map<string, Room>} */
 const rooms = new Map();
+
+const ROOM_RE = /^\/room\/(\d{4})$/;
+const PEER_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
 function originAllowed(origin) {
   if (ALLOWED_ORIGINS.length === 1 && ALLOWED_ORIGINS[0] === '*') return true;
@@ -48,21 +83,70 @@ function originAllowed(origin) {
   return ALLOWED_ORIGINS.some((a) => {
     if (a === origin) return true;
     if (a.includes('*')) {
-      const re = new RegExp(
-        '^' + a.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '.*') + '$',
-      );
+      const re = new RegExp(`^${a.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '.*')}$`);
       return re.test(origin);
     }
     return false;
   });
 }
 
+function allocRoomId() {
+  if (rooms.size >= 9000) return null;
+  for (let i = 0; i < 64; i++) {
+    const id = String(Math.floor(Math.random() * 10000)).padStart(4, '0');
+    if (!rooms.has(id)) return id;
+  }
+  for (let n = 0; n < 10000; n++) {
+    const id = String(n).padStart(4, '0');
+    if (!rooms.has(id)) return id;
+  }
+  return null;
+}
+
+function send(ws, msg) {
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg));
+}
+
+function others(room, peerId) {
+  return [...room.seats.entries()].filter(([id]) => id !== peerId).map(([, s]) => s);
+}
+
+function destroyRoom(room, code, reason) {
+  if (!rooms.delete(room.id)) return;
+  if (room.claimTimer) clearTimeout(room.claimTimer);
+  for (const seat of room.seats.values()) {
+    if (seat.awayTimer) clearTimeout(seat.awayTimer);
+    const ws = seat.ws;
+    seat.ws = null;
+    if (ws) {
+      ws.data.seat = null;
+      ws.close(code, reason);
+    }
+  }
+  console.log(`[room ${room.id}] destroyed (${reason})`);
+}
+
+function createRoom(hostPeer) {
+  const id = allocRoomId();
+  if (!id) return null;
+  /** @type {Room} */
+  const room = { id, seats: new Map(), claimTimer: null };
+  room.seats.set(hostPeer, { ws: null, role: 'host', connectedOnce: false, awayTimer: null });
+  room.claimTimer = setTimeout(() => {
+    room.claimTimer = null;
+    const anyOnline = [...room.seats.values()].some((s) => s.ws);
+    if (!anyOnline) destroyRoom(room, CLOSE_PEER_GONE, 'unclaimed');
+  }, CLAIM_MS);
+  rooms.set(id, room);
+  console.log(`[room ${id}] created`);
+  return room;
+}
+
+// ---------------------------------------------------------------- static
+
 function cacheControlFor(pathname) {
-  // Vite hashes everything under /assets, so those can be cached forever.
   if (pathname.startsWith('/assets/')) return 'public, max-age=31536000, immutable';
-  // Engine WASM + weights (~40MB) aren't hashed but change rarely.
   if (pathname.startsWith('/rapfi/')) return 'public, max-age=86400';
-  // index.html and everything else: always revalidate so deploys show up.
   return 'no-cache';
 }
 
@@ -75,7 +159,6 @@ async function serveStatic(pathname) {
   } catch {
     return new Response('bad request', { status: 400 });
   }
-  // Resolve against STATIC_DIR and refuse anything that escapes it.
   let abs = path.normalize(path.join(STATIC_DIR, rel));
   if (abs !== STATIC_DIR && !abs.startsWith(STATIC_DIR + path.sep)) return notFound();
 
@@ -85,8 +168,6 @@ async function serveStatic(pathname) {
     s = await stat(abs).catch(() => null);
   }
   if (!s?.isFile()) {
-    // SPA fallback: client-side routes (/local, /online) get index.html.
-    // Paths that look like files (have an extension) are real 404s.
     if (path.extname(rel)) return notFound();
     abs = path.join(STATIC_DIR, 'index.html');
     s = await stat(abs).catch(() => null);
@@ -97,7 +178,7 @@ async function serveStatic(pathname) {
   });
 }
 
-const ROOM_RE = /^\/room\/(\d{4})$/;
+// ---------------------------------------------------------------- server
 
 const server = Bun.serve({
   port: PORT,
@@ -109,14 +190,31 @@ const server = Bun.serve({
       return Response.json({ ok: true, rooms: rooms.size });
     }
 
-    const m = url.pathname.match(ROOM_RE);
-    if (m) {
-      const origin = req.headers.get('origin');
-      if (!originAllowed(origin)) {
+    if (url.pathname === '/rooms' && req.method === 'POST') {
+      if (!originAllowed(req.headers.get('origin'))) {
         return new Response('origin not allowed', { status: 403 });
       }
-      const roomId = m[1];
-      if (srv.upgrade(req, { data: { roomId } })) return;
+      let body;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: 'bad json' }, { status: 400 });
+      }
+      const peer = typeof body?.peer === 'string' ? body.peer : '';
+      if (!PEER_RE.test(peer)) return Response.json({ error: 'bad peer id' }, { status: 400 });
+      const room = createRoom(peer);
+      if (!room) return Response.json({ error: 'no rooms left' }, { status: 503 });
+      return Response.json({ id: room.id, grace: GRACE_MS });
+    }
+
+    const m = url.pathname.match(ROOM_RE);
+    if (m) {
+      if (!originAllowed(req.headers.get('origin'))) {
+        return new Response('origin not allowed', { status: 403 });
+      }
+      const peerId = url.searchParams.get('peer') ?? '';
+      if (!PEER_RE.test(peerId)) return new Response('bad peer id', { status: 400 });
+      if (srv.upgrade(req, { data: { roomId: m[1], peerId, seat: null } })) return;
       return new Response('upgrade failed', { status: 400 });
     }
 
@@ -124,83 +222,136 @@ const server = Bun.serve({
     return notFound();
   },
   websocket: {
-    // Idle sockets (no bytes in either direction) get auto-closed after
-    // this many seconds. Clients heartbeat every 30s so active games
-    // never trip it; this just reaps zombies from abrupt browser kills.
+    // Backstop only; liveness is tracked via lastSeen (see the ping loop).
     idleTimeout: 120,
     open(ws) {
-      const { roomId } = ws.data;
-      let peers = rooms.get(roomId);
-      if (peers && peers.size >= ROOM_CAP) {
-        ws.close(4002, 'room full');
+      ws.data.lastSeen = Date.now();
+      const { roomId, peerId } = ws.data;
+      const room = rooms.get(roomId);
+      if (!room) {
+        ws.close(CLOSE_NOT_FOUND, 'room not found');
         return;
       }
-      if (!peers) {
-        peers = new Set();
-        rooms.set(roomId, peers);
-      }
-      peers.add(ws);
-
-      ws.send(JSON.stringify({ type: 'welcome', peers: peers.size - 1 }));
-
-      for (const p of peers) {
-        if (p !== ws && p.readyState === 1) {
-          p.send(JSON.stringify({ type: 'peer_joined' }));
+      let seat = room.seats.get(peerId);
+      if (seat) {
+        if (seat.awayTimer) {
+          clearTimeout(seat.awayTimer);
+          seat.awayTimer = null;
         }
+        if (seat.ws) {
+          // Same browser opened a second connection (another tab, or a
+          // reconnect racing the old socket's close). Newest wins.
+          const old = seat.ws;
+          seat.ws = null;
+          old.data.seat = null;
+          old.close(CLOSE_REPLACED, 'replaced');
+        }
+      } else {
+        if (room.seats.size >= ROOM_CAP) {
+          ws.close(CLOSE_ROOM_FULL, 'room full');
+          return;
+        }
+        seat = { ws: null, role: 'guest', connectedOnce: false, awayTimer: null };
+        room.seats.set(peerId, seat);
+      }
+      if (room.claimTimer) {
+        clearTimeout(room.claimTimer);
+        room.claimTimer = null;
       }
 
-      console.log(`[room ${roomId}] open (${peers.size}/${ROOM_CAP})`);
+      const rejoined = seat.connectedOnce;
+      seat.connectedOnce = true;
+      seat.ws = ws;
+      ws.data.seat = seat;
+
+      const rest = others(room, peerId);
+      send(ws, {
+        type: 'welcome',
+        role: seat.role,
+        peers: rest.length,
+        online: rest.filter((s) => s.ws).length,
+        rejoined,
+        grace: GRACE_MS,
+      });
+      for (const s of rest) send(s.ws, { type: rejoined ? 'peer_back' : 'peer_joined' });
+      console.log(
+        `[room ${roomId}] ${seat.role} ${rejoined ? 'back' : 'joined'} (${room.seats.size}/${ROOM_CAP})`,
+      );
+    },
+    pong(ws) {
+      ws.data.lastSeen = Date.now();
     },
     message(ws, data) {
-      const { roomId } = ws.data;
-      const peers = rooms.get(roomId);
-      if (!peers) return;
+      ws.data.lastSeen = Date.now();
+      const { roomId, peerId, seat } = ws.data;
+      const room = rooms.get(roomId);
+      if (!room || !seat) return;
       const payload = typeof data === 'string' ? data : new TextDecoder().decode(data);
       // Eat heartbeat pings. Cheap length check first to avoid JSON.parse
       // on every move payload.
+      // Answer app-level pings (browsers can't see protocol pings, so this
+      // is how a client notices a dead connection). Cheap length check
+      // first to avoid JSON.parse on every move payload.
       if (payload.length < 64) {
         try {
           const m = JSON.parse(payload);
-          if (m && m.t === 'ping') return;
+          if (m && m.t === 'ping') {
+            ws.send('{"type":"pong"}');
+            return;
+          }
         } catch {
           // non-JSON — just fall through to forward
         }
       }
-      for (const p of peers) {
-        if (p !== ws && p.readyState === 1) p.send(payload);
+      for (const s of others(room, peerId)) {
+        if (s.ws && s.ws.readyState === 1) s.ws.send(payload);
       }
     },
-    close(ws) {
-      const { roomId } = ws.data;
-      const peers = rooms.get(roomId);
-      if (!peers) return;
-      peers.delete(ws);
-      // Kick everyone else: any disconnect ends the match. This frees the
-      // 4-digit room number immediately for reuse.
-      for (const p of peers) {
-        if (p.readyState === 1) p.close(4001, 'peer disconnected');
+    close(ws, code) {
+      const { roomId, peerId, seat } = ws.data;
+      const room = rooms.get(roomId);
+      // Rejected, replaced, or already torn down: nothing to do.
+      if (!room || !seat || seat.ws !== ws) return;
+      seat.ws = null;
+
+      if (code === CLOSE_LEAVE) {
+        destroyRoom(room, CLOSE_PEER_GONE, 'peer disconnected');
+        return;
       }
-      rooms.delete(roomId);
-      console.log(`[room ${roomId}] closed`);
+
+      // Refresh, tab close, network drop: hold the seat and let the other
+      // side know. If nobody comes back in time the room is torn down.
+      seat.awayTimer = setTimeout(() => {
+        seat.awayTimer = null;
+        destroyRoom(room, CLOSE_PEER_GONE, 'peer disconnected');
+      }, GRACE_MS);
+      for (const s of others(room, peerId)) send(s.ws, { type: 'peer_away', grace: GRACE_MS });
+      console.log(`[room ${roomId}] ${seat.role} away (code ${code})`);
     },
   },
 });
 
-// Server→client heartbeat. Reverse proxies drop WebSockets that stay silent
-// in the upstream→client direction (nginx proxy_read_timeout defaults to
-// 60s), and a player waiting on the opponent's move receives nothing for as
-// long as the opponent thinks. Protocol-level pings are answered by the
-// browser automatically, so this also keeps the client→server direction
-// alive when a background tab throttles the app-level ping timer.
-const SERVER_PING_INTERVAL_MS = 25_000;
+// Protocol-level pings: browsers answer them even in throttled background
+// tabs, so a live client always resets idleTimeout, and reverse proxies
+// (nginx proxy_read_timeout) never see a silent connection.
 setInterval(() => {
-  for (const peers of rooms.values()) {
-    for (const ws of peers) {
-      if (ws.readyState === 1) ws.ping();
+  const now = Date.now();
+  for (const room of rooms.values()) {
+    for (const seat of room.seats.values()) {
+      const ws = seat.ws;
+      if (!ws) continue;
+      if (now - ws.data.lastSeen > DEAD_AFTER_MS) {
+        // terminate() fires close() right away; a polite close() would wait
+        // on a close handshake the dead peer will never answer.
+        ws.terminate();
+      } else if (ws.readyState === 1) {
+        ws.ping();
+      }
     }
   }
 }, SERVER_PING_INTERVAL_MS);
 
 console.log(`listening on :${server.port}`);
 console.log(`allowed origins: ${ALLOWED_ORIGINS.join(', ') || '(none)'}`);
+console.log(`seat grace: ${GRACE_MS}ms`);
 if (STATIC_DIR) console.log(`serving static files from ${STATIC_DIR}`);

@@ -1,109 +1,159 @@
 # Gomind
 
-五子棋 Web 对战 + AI。
+**English** | [简体中文](README.zh-CN.md)
 
-## 技术栈
+Gomind is a browser-based Gomoku (five-in-a-row) application built around
+[Rapfi](https://github.com/dhbloo/rapfi), a strong NNUE Gomoku engine compiled to
+WebAssembly. The engine runs entirely in the browser; the only server-side component
+is a lightweight WebSocket relay used for online play.
 
-- **Engine**: [Rapfi](https://github.com/dhbloo/rapfi) (C++ NNUE → WASM)
-- **Web**: React 18 + TypeScript + Vite
-- **UI**: Tailwind CSS v4 + shadcn/ui
-- **Pkg**: bun workspaces
+## Features
 
-## 启动
+- **Local play**: two players on the same device.
+- **Human vs. AI**: play against the Rapfi engine.
+- **Self-play**: watch the engine play against itself.
+- **Live analysis**: top candidate moves, position evaluation, and estimated win rate.
+- **Online play**: create a room (the host picks a color and the time control), share
+  its four-digit code or link, and play over WebSocket. Undo, restart, and draw need the
+  opponent's consent; resignation and timeouts end the game. A player who refreshes, loses
+  the network, or closes the tab gets 90 seconds to come back to the same seat, and both
+  clocks stop meanwhile.
+
+Games use freestyle rules on a 15×15 board: five or more stones in a row wins.
+
+## Tech Stack
+
+| Layer | Technology |
+| --- | --- |
+| Engine | Rapfi (C++, NNUE) compiled to WebAssembly, running in a Web Worker |
+| Frontend | React 18, TypeScript, Vite |
+| UI | Tailwind CSS v4, shadcn/ui |
+| Relay | Bun (WebSocket relay and static file server) |
+| Tooling | Bun workspaces, Biome, Vitest |
+
+## Getting Started
+
+Requires [Bun](https://bun.sh) 1.3 or later.
 
 ```bash
 bun install
-bun run dev            # 启动 Vite (前端)
-bun run dev:relay      # 可选: 启动联机对战中转 (Vite 会把 /room 代理过去)
+bun run dev          # start the Vite dev server
+bun run dev:relay    # optional: start the relay on :8765 for online play
 ```
 
-Rapfi 的 WASM + NNUE 权重在 `web/public/rapfi/` 下直接 serve，不需要本地构建。
+During development, Vite proxies `/room/`, `/rooms`, and `/health` to the local relay. The
+prebuilt Rapfi WebAssembly modules and network weights are served from
+`web/public/rapfi/`, so no native toolchain is required.
 
-## 结构
+## Project Structure
 
 ```plaintext
-web/     React 前端
-relay/   联机对战 WebSocket 中转，也能托管 web/dist 静态文件
-deploy/  Caddyfile / systemd 单元
+web/      React frontend
+relay/    WebSocket relay for online play; can also serve the built frontend
+deploy/   Caddyfile, nginx snippet, systemd unit, and redeploy script
 ```
 
-## 部署
+## Scripts
 
-整个项目就是一个 Bun 进程：`relay/server.js` 既转发 `/room/<ID>` 的 WebSocket，
-也（设置 `STATIC_DIR` 时）托管构建好的前端。前端默认连同源地址，不需要配域名。
+| Command | Description |
+| --- | --- |
+| `bun run dev` | Start the frontend dev server |
+| `bun run dev:relay` | Start the relay locally on port 8765 |
+| `bun run build` | Type-check and build the frontend into `web/dist` |
+| `bun run start` | Serve `web/dist` and the relay from a single process |
+| `bun run test` | Run frontend unit tests |
+| `bun run lint` | Run Biome checks |
+| `bun run format` | Format the codebase with Biome |
 
-**Docker（推荐）**
+## Deployment
+
+The application runs as a single Bun process. `relay/server.js` allocates rooms on
+`POST /rooms`, handles WebSocket connections on `/room/<ID>`, and answers a health check
+on `/health`; when `STATIC_DIR` is set,
+it also serves the built frontend with an SPA fallback. By default the frontend connects
+to the relay on the same origin, so no additional URL configuration is needed.
+
+### Docker Compose (recommended)
 
 ```bash
-cp .env.example .env   # BIND=127.0.0.1:端口，给已有的反代（nginx / Caddy）回源
+cp .env.example .env
 docker compose up -d --build
 ```
 
-已有服务器的话 `deploy/deploy.sh [ssh主机] [远端目录]` 会打包上传、重建镜像并重启，
-服务器上的 `.env` 不会被覆盖。
+By default the container is bound to `127.0.0.1:8000` (configurable via `BIND` in
+`.env`), for use behind an existing reverse proxy such as nginx, OpenResty, or Caddy.
+The proxy must forward WebSocket upgrade headers (`Upgrade` and `Connection`) and use a
+read timeout of at least 120 seconds. See `deploy/nginx-site.conf.example` for a
+reference configuration.
 
-反代那边要把 WebSocket 升级头转发过去（`Upgrade` / `Connection`，读超时 ≥ 120s），
-参考 `deploy/nginx-site.conf.example`。常见面板的"反向代理"站点默认已经带这些头。
+### Docker Compose with bundled Caddy
 
-机器上还没有反代、想直接对外的话，叠加自带的 Caddy，自动签 HTTPS：
+If the host has no reverse proxy, an overlay adds Caddy with automatic HTTPS. Set
+`DOMAIN` in `.env`, make sure ports 80 and 443 are open, and run:
 
 ```bash
-# .env 里填 DOMAIN=你的域名；服务器开放 80/443
 docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d --build
 ```
 
-如果前面是 Cloudflare 之类的 CDN 终止 TLS，确保 CDN 开了 WebSocket，
-回源走 HTTP 到你的反代或 Caddy（后者把 `DOMAIN` 设为 `:80`）。
+When a CDN (for example, Cloudflare) terminates TLS in front of the server, enable
+WebSocket support on the CDN and set `DOMAIN=:80` so that Caddy serves plain HTTP to
+the CDN.
 
-**不用 Docker**
+### Redeploying to a remote host
+
+```bash
+deploy/deploy.sh <ssh-host> <remote-dir>
+```
+
+The script packages the working tree, uploads it over SSH, rebuilds the image, and
+restarts the service. An existing `.env` on the server is left untouched.
+
+### Without Docker
 
 ```bash
 bun install && bun run build
-PORT=8000 bun run start          # = STATIC_DIR=web/dist bun run relay/server.js
+PORT=8000 bun run start    # equivalent to: STATIC_DIR=web/dist bun run relay/server.js
 ```
 
-常驻可以用 `deploy/gomind.service`（systemd），再在前面放 Caddy / nginx 做 TLS。
-nginx 需要给 `/room/` 加 WebSocket 升级头（`Upgrade` / `Connection`）并把超时调到 2 分钟以上。
+To run it as a service, use the systemd unit in `deploy/gomind.service` and place
+Caddy or nginx in front of it for TLS. The nginx configuration must forward WebSocket
+upgrade headers for `/room/` and set a read timeout of at least two minutes.
 
-**前后端分开部署**
+### Hosting the frontend and relay separately
 
-前端是纯静态文件，可以放任意静态托管；此时构建前设置
-`VITE_RELAY_WS_URL=wss://relay.example.com` 指向单独部署的 relay，
-relay 侧用 `ALLOWED_ORIGINS=https://你的前端域名` 限制来源。
+The frontend is a set of static files and can be hosted on any static hosting service.
+In that case, set `VITE_RELAY_WS_URL` at build time to point to the relay (for example,
+`wss://relay.example.com`), and restrict accepted origins on the relay with
+`ALLOWED_ORIGINS` (for example, `https://app.example.com`).
 
-环境变量：
+### Configuration
 
-| 变量 | 默认 | 说明 |
-| --- | --- | --- |
-| `PORT` | `8000` | 监听端口 |
-| `STATIC_DIR` | 不托管 | 静态文件目录，SPA 路由回退到 index.html |
-| `ALLOWED_ORIGINS` | `*` | WebSocket 握手允许的 Origin，逗号分隔，支持 `*` 通配 |
+| Variable | Default | Scope | Description |
+| --- | --- | --- | --- |
+| `PORT` | `8000` | Relay | Listening port |
+| `STATIC_DIR` | unset | Relay | Directory of static files to serve; unknown routes fall back to `index.html` |
+| `ALLOWED_ORIGINS` | `*` | Relay | Comma-separated list of origins allowed to open WebSocket connections; supports `*` wildcards |
+| `GRACE_MS` | `90000` | Relay | How long a disconnected player's seat is held before the room closes |
+| `DEAD_AFTER_MS` | `15000` | Relay | Silence after which a connection is treated as dropped |
+| `BIND` | `127.0.0.1:8000` | Docker Compose | Host address and port the container is published on |
+| `DOMAIN` | — | Caddy overlay | Hostname that Caddy serves and obtains a certificate for; `:80` for plain HTTP |
+| `VITE_RELAY_WS_URL` | same origin | Frontend build | WebSocket base URL of the relay |
 
-## 开发
+## Notes
 
-```bash
-bun run dev        # 前端 dev server
-bun run build      # 生产构建
-bun run test       # 前端单测
-bun run lint       # biome
-```
+Rapfi currently runs in single-threaded mode with WebAssembly SIMD128. A multi-threaded
+(pthreads) build is included but not yet enabled, because spawning Emscripten pthreads
+from within a nested Web Worker currently hangs. The single-threaded build reaches
+about 130K nodes per second on an Apple M3 Pro, which is sufficient for strong play.
 
-## 功能
+## Roadmap
 
-### V1(当前)
+- [ ] Game review
+- [ ] Import and export of game records
 
-- [x] 同屏双人
-- [x] 人机对战(Rapfi NNUE)
-- [x] 机机自对弈观战
-- [x] 实时分析:Top 候选手 + 评估分 + 胜率
+## Acknowledgements
 
-### V2(规划)
-
-- [x] 远程对战(WebSocket 房间号)  — 接入完成，与前端同进程部署
-- [ ] 复盘 / 棋谱导入导出
-
-## 备注
-
-Rapfi 目前跑的是单线程 SIMD128 模式。多线程 (pthread) 在浏览器里暂未启用
- — 需要解决 Emscripten pthread 在嵌套 Worker 里的派生挂死问题。
-单线程 + SIMD 在 M3 Pro 上已经能到 ~130K NPS，对局强度足够,不急。
+- [Rapfi](https://github.com/dhbloo/rapfi) by the Rapfi developers, licensed under
+  GPL-3.0. The WebAssembly builds in `web/public/rapfi/` are compiled from Rapfi.
+- Neural network weights from
+  [rapfi-networks](https://github.com/dhbloo/rapfi-networks), released under CC0-1.0.

@@ -14,7 +14,8 @@ const COI_HEADERS = {
 // forwards room WebSockets to the local relay (`bun run dev:relay`), which
 // also makes LAN testing from a phone work through the Vite host.
 const RELAY_PROXY = {
-  '/room': { target: 'ws://localhost:8765', ws: true },
+  '/room/': { target: 'ws://localhost:8765', ws: true },
+  '/rooms': { target: 'http://localhost:8765' },
   '/health': { target: 'http://localhost:8765' },
 };
 

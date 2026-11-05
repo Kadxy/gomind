@@ -1,9 +1,9 @@
-import { ChevronLeft } from 'lucide-react';
-import { useEffect, useState } from 'react';
 import { HomeApp } from '@/HomeApp';
 import { LocalApp } from '@/LocalApp';
 import { OnlineApp } from '@/OnlineApp';
 import { cn } from '@/lib/utils';
+import { ChevronLeft } from 'lucide-react';
+import { useEffect, useState } from 'react';
 
 type Route = 'home' | 'local' | 'online';
 
@@ -44,7 +44,7 @@ export default function App() {
       {route === 'home' ? (
         <HomeApp onNavigate={navigate} />
       ) : route === 'online' ? (
-        <OnlineApp onExit={() => navigate('home')} />
+        <OnlineApp />
       ) : (
         <LocalApp />
       )}
