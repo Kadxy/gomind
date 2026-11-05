@@ -87,6 +87,8 @@ export interface RoomListener {
 
 export class RoomConnection {
   private ws: WebSocket | null = null;
+  /** Bumped by every reset; a create() that outlives one is abandoned. */
+  private gen = 0;
   private state: ConnState = initialConnState;
   /** False after leave(): late socket events are ignored. */
   private active = false;
@@ -112,6 +114,7 @@ export class RoomConnection {
   /** Ask the relay for a fresh room and join it as host. */
   async create(): Promise<string | null> {
     this.reset();
+    const gen = this.gen;
     this.set({ ...initialConnState, status: 'connecting' });
     try {
       const r = await fetch(`${this.wsBase.replace(/^ws/, 'http')}/rooms`, {
@@ -121,9 +124,11 @@ export class RoomConnection {
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const { id } = (await r.json()) as { id: string };
+      if (gen !== this.gen) return null;
       this.join(id);
       return id;
     } catch (e) {
+      if (gen !== this.gen) return null;
       console.error('[room] create failed', e);
       this.set({ status: 'error', error: '无法连接服务器' });
       return null;
@@ -183,6 +188,7 @@ export class RoomConnection {
   }
 
   private reset(): void {
+    this.gen += 1;
     this.active = false;
     this.welcomed = false;
     this.reconnectDeadline = null;

@@ -1,7 +1,14 @@
 import { Board } from '@/components/Board';
-import { Lobby, type LobbyTab, WaitingRoom } from '@/components/OnlineGate';
+import {
+  CreateForm,
+  JoinForm,
+  type LobbyView,
+  OnlineChoose,
+  WaitingRoom,
+} from '@/components/OnlineGate';
 import { type DockAction, type DockSpec, OnlineDock } from '@/components/online/OnlineDock';
 import { PlayerBar, type Presence } from '@/components/online/PlayerBar';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import {
   clockFromSnapshot,
   clockView,
@@ -79,9 +86,10 @@ export function OnlineApp() {
   const roleRef = useRef<RoomRole | null>(null);
   // We pressed 离开 (or the room closed under us): keep the board on screen.
   const [left, setLeft] = useState(false);
-  // Lobby form state lives here so a deep link can prefill and submit it.
-  const [tab, setTab] = useState<LobbyTab>('join');
+  // Lobby state lives here so a deep link can prefill and submit the join form.
+  const [view, setView] = useState<LobbyView>('choose');
   const [code, setCode] = useState('');
+  const [confirmLeave, setConfirmLeave] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const showFlash = useCallback((text: string) => {
@@ -390,6 +398,9 @@ export function OnlineApp() {
     setSavedRole(null);
     setLeft(false);
     setFlash(null);
+    setConfirmLeave(false);
+    setCode('');
+    setView('choose');
     setUrlRoom(null);
   };
 
@@ -400,7 +411,7 @@ export function OnlineApp() {
     roleRef.current = 'host';
     setSavedRole('host');
     setLeft(false);
-    setTab('create');
+    setView('create');
     const id = await room.create();
     if (id) setUrlRoom(id);
   };
@@ -410,7 +421,7 @@ export function OnlineApp() {
     roleRef.current = null;
     setSavedRole(null);
     setLeft(false);
-    setTab('join');
+    setView('join');
     setCode(id);
     clearSession();
     room.join(id);
@@ -420,6 +431,40 @@ export function OnlineApp() {
   const resetAttempt = () => {
     if (room.status === 'error' || room.status === 'ended') room.leave();
   };
+
+  // Lobby navigation. Picking 加入 / 创建 pushes a history entry (same URL)
+  // so the browser's back gesture returns to the choice, like the in-card
+  // back button. In a waiting room or a game, back does nothing here.
+  const lobbyRef = useRef(true);
+  const roomRef = useRef(room);
+  roomRef.current = room;
+  const exitForm = () => {
+    if (roomRef.current.status !== 'idle') roomRef.current.leave();
+    apply({ type: 'clear' });
+    roleRef.current = null;
+    setSavedRole(null);
+    setUrlRoom(null);
+    setView('choose');
+  };
+  const pickView = (v: 'join' | 'create') => {
+    window.history.pushState({ onlineView: v }, '', window.location.href);
+    setView(v);
+  };
+  const backFromForm = () => {
+    if (window.history.state?.onlineView) window.history.back();
+    else exitForm();
+  };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reads refs only
+  useEffect(() => {
+    const onPop = () => {
+      if (!lobbyRef.current) return;
+      const v = window.history.state?.onlineView as LobbyView | undefined;
+      if (v) setView(v);
+      else exitForm();
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   const handleLeaveGame = () => {
     const s = stateRef.current;
@@ -472,44 +517,53 @@ export function OnlineApp() {
   const closed = left || room.status === 'ended' || room.status === 'error';
   const st = room.status;
 
-  if (!match.started && !left) {
-    const host = role === 'host';
-    if (host && room.roomId && st !== 'idle' && st !== 'error' && st !== 'ended') {
-      if (st !== 'connecting' || tab !== 'create') {
-        return (
-          <WaitingRoom
-            roomId={room.roomId}
-            hostSide={match.hostSide}
-            timeControl={match.timeControl}
-            peerDropped={st === 'peer_away'}
-            onCancel={backToLobby}
-          />
-        );
-      }
-    }
-    // Guest: the join button keeps spinning until the host's sync arrives.
-    const busy = st !== 'idle' && st !== 'error' && st !== 'ended';
-    const error = st === 'error' ? room.error : st === 'ended' ? '房间已关闭' : null;
+  const inWaitingRoom =
+    !match.started &&
+    !left &&
+    role === 'host' &&
+    !!room.roomId &&
+    st !== 'idle' &&
+    st !== 'error' &&
+    st !== 'ended' &&
+    !(st === 'connecting' && view === 'create');
+  lobbyRef.current = !match.started && !left && !inWaitingRoom;
+
+  if (inWaitingRoom && room.roomId) {
     return (
-      <Lobby
-        tab={tab}
-        onTab={(t) => {
-          resetAttempt();
-          setTab(t);
-        }}
-        code={code}
-        onCode={(c) => {
-          resetAttempt();
-          setCode(c);
-        }}
-        busy={busy}
-        error={error}
-        info={!host && st === 'peer_away' ? '房主暂时离线，回来后自动开始' : null}
-        onJoin={handleJoin}
-        onCreate={handleCreate}
+      <WaitingRoom
+        roomId={room.roomId}
+        hostSide={match.hostSide}
+        timeControl={match.timeControl}
+        peerDropped={st === 'peer_away'}
         onCancel={backToLobby}
       />
     );
+  }
+
+  if (!match.started && !left) {
+    // Guest: the join button keeps spinning until the host's sync arrives.
+    const busy = st !== 'idle' && st !== 'error' && st !== 'ended';
+    const error = st === 'error' ? room.error : st === 'ended' ? '房间已关闭' : null;
+    if (view === 'join') {
+      return (
+        <JoinForm
+          code={code}
+          onCode={(c) => {
+            resetAttempt();
+            setCode(c);
+          }}
+          busy={busy}
+          error={error}
+          info={role !== 'host' && st === 'peer_away' ? '房主暂时离线，回来后自动开始' : null}
+          onJoin={handleJoin}
+          onBack={backFromForm}
+        />
+      );
+    }
+    if (view === 'create') {
+      return <CreateForm busy={busy} error={error} onCreate={handleCreate} onBack={backFromForm} />;
+    }
+    return <OnlineChoose onPick={pickView} />;
   }
 
   const live = st === 'ready' && !closed && match.clock.pausedAt === null;
@@ -524,8 +578,7 @@ export function OnlineApp() {
     label: '离开',
     icon: <LogOut className={ICON} />,
     variant: 'ghost',
-    onClick: handleLeaveGame,
-    confirm: inProgress ? { label: '确认离开', destructive: true } : undefined,
+    onClick: () => (inProgress ? setConfirmLeave(true) : handleLeaveGame()),
   };
 
   let dock: DockSpec;
@@ -703,6 +756,19 @@ export function OnlineApp() {
       <OnlineDock
         spec={dock}
         resetKey={`${game.history.length}|${pending?.kind ?? ''}|${st}|${result ? 1 : 0}`}
+      />
+      <ConfirmDialog
+        open={confirmLeave && inProgress}
+        title="离开房间？"
+        description="对局还没结束。离开后房间会关闭，对方也无法继续。"
+        cancelLabel="继续对局"
+        confirmLabel="离开房间"
+        destructive
+        onCancel={() => setConfirmLeave(false)}
+        onConfirm={() => {
+          setConfirmLeave(false);
+          handleLeaveGame();
+        }}
       />
     </main>
   );

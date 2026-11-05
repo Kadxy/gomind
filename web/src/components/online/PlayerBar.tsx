@@ -112,7 +112,7 @@ function PlayerCard({
   } else if (active && !live) {
     status = '计时暂停';
   } else if (active) {
-    status = isMe ? '轮到你' : '思考中';
+    status = isMe ? '轮到你' : '轮到对方';
     if (isMe) emphasis = 'strong';
   } else {
     status = side === 1 ? '执黑' : '执白';
